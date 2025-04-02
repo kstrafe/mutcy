@@ -4,7 +4,7 @@ use mutcy::*;
 
 fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("enter-scope", |bench| {
-        let mut assoc = Assoc::default();
+        let mut assoc = Assoc::new();
         bench.iter(|| {
             assoc.enter(black_box(|_: &mut Mut<()>| {}));
         });
@@ -22,7 +22,7 @@ fn criterion_benchmark(c: &mut Criterion) {
                     .unwrap()
                     .mutate()
                     .via(self)
-                    .subtract_and_call(black_box(count));
+                    .subtract_and_call(black_box(count - 1));
             }
         }
 
@@ -40,23 +40,20 @@ fn criterion_benchmark(c: &mut Criterion) {
             }
         }
 
-        let mut assoc = Assoc::default();
+        let mut assoc = Assoc::new();
 
-        let a = Res::new_in(A { b: None }, &assoc);
-        let b = Res::new_in(B { a: a.clone() }, &assoc);
+        assoc.enter(|key| {
+            let a = Res::new(A { b: None });
+            let b = Res::new(B { a: a.clone() });
 
-        assoc.enter(|x| {
-            a.mutate().via(x).b = Some(b.clone());
-        });
+            a.mutate().via(key).b = Some(b.clone());
+            let mut ax = a.via(key);
 
-        bench.iter(|| {
-            assoc.enter(|x| {
-                a.mutate().via(x).subtract_and_call(1000);
+            bench.iter(|| {
+                ax.subtract_and_call(black_box(1000));
             });
-        });
 
-        assoc.enter(|x| {
-            a.mutate().via(x).b = None;
+            ax.b = None;
         });
     });
 }
