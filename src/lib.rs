@@ -272,7 +272,7 @@ pub(crate) struct AssocInner;
 
 /// [Assoc]iated reference-counted handle to data.
 ///
-/// This item can only mutably accessed using [via](Res::via).
+/// This item's `T` can only be mutably accessed using [via](Res::via).
 ///
 /// `Res` stands for resource.
 ///
