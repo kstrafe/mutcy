@@ -355,12 +355,11 @@ impl<T: ?Sized + 'static> Res<T> {
         Self { scope, data }
     }
 
-    /// Creates a new handle for mutation chaining
+    /// Creates a new handle for mutation chaining.
     ///
     /// Equivalent to [`Clone::clone`] but provides clearer semantics when
     /// establishing new mutation chains through [`via`].
     ///
-    /// # Why use this instead of `clone()`?
     /// Avoids double-borrow scenarios in method chains:
     /// ```
     /// # #![feature(arbitrary_self_types)]
