@@ -398,7 +398,7 @@ impl<T: ?Sized + 'static> Res<T> {
 
     /// Relinquish a previous `Mut` and creates a `Mut` of `self`.
     ///
-    /// Since references to `T` a `Mut<T>` require [Deref] or [DerefMut],
+    /// Since references to `T` from `Mut<T>` require [Deref] or [DerefMut],
     /// calling this function will relinquish all such borrows on `Mut<T>`.
     /// This makes it safe to acquire a mutable reference recursively.
     ///
