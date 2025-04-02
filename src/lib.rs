@@ -34,7 +34,7 @@
 //! // Create a new association for our data. Every `Res` is associated with some `Assoc`.
 //! let mut assoc = Assoc::new();
 //!
-//! // Create two associated objects.
+//! // Create two associated objects. See [Res::new] on how to avoid having to pass `&assoc`.
 //! let a = Res::new_in(A { b: None, x: 0 }, &assoc);
 //! let b = Res::new_in(B { a: a.clone(), y: 0 }, &assoc);
 //!
@@ -199,6 +199,8 @@ use std::{
     rc::{Rc, Weak},
 };
 
+scoped_tls::scoped_thread_local!(static ASSOC: Rc<AssocInner>);
+
 /// Association of pointers.
 pub struct Assoc(Rc<AssocInner>, Res<()>);
 
@@ -234,25 +236,23 @@ impl Assoc {
     /// Enters the association context to perform mutations.
     ///
     /// Grants you the initial [Mut] used to transform [Res] using
-    /// [via](Res::via).
-    ///
-    /// Similar to [Assoc::key] but enters a function instead. The plan is to
-    /// use this with a scoped thread local to allow together with
-    /// `Res::new` to create `Res` objects without having to provide the
-    /// association manually.
+    /// [via](Res::via), also installs a
+    /// [scoped_thread_local](scoped_tls::scoped_thread_local) that allows
+    /// you to call [Res::new] without a panic.
     pub fn enter<F: FnOnce(&mut Mut<()>) -> R, R>(&mut self, work: F) -> R {
         let mut item: Mut<()> = Mut {
             scope: PhantomData,
             data: self.1.clone(),
         };
-        (work)(&mut item)
+
+        ASSOC.set(&self.0, || (work)(&mut item))
     }
 }
 
 impl Default for Assoc {
     fn default() -> Self {
         let inner = Rc::new(AssocInner);
-        let root = Res::new(inner.clone(), ());
+        let root = Res::new_in((), &inner);
         Self(inner, root)
     }
 }
@@ -279,6 +279,13 @@ impl seal::Sealed for Assoc {
 }
 
 #[allow(private_interfaces)]
+impl seal::Sealed for Rc<AssocInner> {
+    fn assoc_inner(&self) -> &Rc<AssocInner> {
+        self
+    }
+}
+
+#[allow(private_interfaces)]
 impl<'a, T: 'static> seal::Sealed for Mut<'a, T> {
     fn assoc_inner(&self) -> &Rc<AssocInner> {
         &self.data.0.scope
@@ -293,6 +300,8 @@ impl<T> seal::Sealed for Res<T> {
 }
 
 impl Associated for Assoc {}
+#[doc(hidden)]
+impl Associated for Rc<AssocInner> {}
 impl<T: 'static> Associated for Res<T> {}
 impl<'a, T: 'static> Associated for Mut<'a, T> {}
 
@@ -321,15 +330,64 @@ pub(crate) struct AssocInner;
 pub struct Res<T: ?Sized + 'static>(Rc<ResInner<T>>);
 
 impl<T: 'static> Res<T> {
-    fn new(scope: Rc<AssocInner>, data: T) -> Self {
-        Self(Rc::new(ResInner {
-            scope,
-            data: UnsafeCell::new(data),
-        }))
+    /// Create a new `Res` associated to the currently [enter](Assoc::enter)ed
+    /// [Assoc].
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if not (transitively) called from within
+    /// [Assoc::enter]'s `work` function.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use mutcy::{Assoc, Res};
+    ///
+    /// let mut assoc = Assoc::new();
+    ///
+    /// assoc.enter(|x| {
+    ///     let item = Res::new(123);
+    /// });
+    ///
+    /// // PANIC - Thread local context is not present for `Res` to associate with.
+    /// // Res::new(123);
+    /// ```
+    pub fn new(data: T) -> Self {
+        ASSOC.with(|assoc| Self::new_in(data, assoc))
     }
-}
 
-impl<T: 'static> Res<T> {
+    /// Create a new cyclic `Res` associated with the currently [enter](Assoc::enter)ed [Assoc].
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if not (transitively) called from within
+    /// [Assoc::enter]'s `work` function.
+    ///
+    /// # Examples
+    /// ```
+    /// use mutcy::{Assoc, Res, WeakRes};
+    ///
+    /// let mut assoc = Assoc::new();
+    ///
+    /// struct MyItem(i32, WeakRes<Self>);
+    ///
+    /// assoc.enter(|x| {
+    ///     let item = Res::new_cyclic(|weak| MyItem(41, weak.clone()));
+    ///
+    ///     let mut data = item.via(x);
+    ///     data.0 += 1;
+    ///
+    ///     let data_reborrow = data.1.upgrade().unwrap().mutate().via(x);
+    ///     assert_eq!(data_reborrow.0, 42);
+    /// });
+    /// ```
+    pub fn new_cyclic<F>(data_fn: F) -> Self
+    where
+        F: FnOnce(&WeakRes<T>) -> T,
+    {
+        ASSOC.with(move |assoc| Self::new_cyclic_in(data_fn, assoc))
+    }
+
     /// Create a new `Res` with the same association as `A`.
     pub fn new_in<A: Associated>(value: T, assoc: &A) -> Self {
         Self(Rc::new(ResInner::new(assoc.assoc_inner().clone(), value)))
