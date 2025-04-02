@@ -194,7 +194,7 @@
 #![feature(unsize)]
 use std::{
     cell::UnsafeCell,
-    marker::Unsize,
+    marker::{PhantomData, Unsize},
     ops::{CoerceUnsized, Deref, DerefMut},
     rc::{Rc, Weak},
 };
@@ -214,7 +214,7 @@ impl Assoc {
     /// [via](Res::via).
     pub fn enter<F: FnOnce(&mut Mut<()>) -> R, R>(&mut self, work: F) -> R {
         let mut item: Mut<()> = Mut {
-            scope: &self.0,
+            scope: PhantomData,
             data: self.1.clone(),
         };
         (work)(&mut item)
@@ -253,14 +253,14 @@ impl seal::Sealed for Assoc {
 #[allow(private_interfaces)]
 impl<'a, T: 'static> seal::Sealed for Mut<'a, T> {
     fn assoc_inner(&self) -> &Rc<AssocInner> {
-        self.scope
+        &self.data.0.scope
     }
 }
 
 #[allow(private_interfaces)]
 impl<T> seal::Sealed for Res<T> {
     fn assoc_inner(&self) -> &Rc<AssocInner> {
-        &self.scope
+        &self.0.scope
     }
 }
 
@@ -290,27 +290,21 @@ pub(crate) struct AssocInner;
 ///
 /// assert_eq!(value, 42);
 /// ```
-pub struct Res<T: ?Sized + 'static> {
-    scope: Rc<AssocInner>,
-    data: Rc<UnsafeCell<T>>,
-}
+pub struct Res<T: ?Sized + 'static>(Rc<ResInner<T>>);
 
 impl<T: 'static> Res<T> {
     fn new(scope: Rc<AssocInner>, data: T) -> Self {
-        Self {
+        Self(Rc::new(ResInner {
             scope,
-            data: Rc::new(UnsafeCell::new(data)),
-        }
+            data: UnsafeCell::new(data),
+        }))
     }
 }
 
 impl<T: 'static> Res<T> {
     /// Create a new `Res` with the same association as `A`.
     pub fn new_in<A: Associated>(value: T, assoc: &A) -> Self {
-        Self {
-            scope: assoc.assoc_inner().clone(),
-            data: Rc::new(UnsafeCell::new(value)),
-        }
+        Self(Rc::new(ResInner::new(assoc.assoc_inner().clone(), value)))
     }
 
     /// Create a new cyclic `Res` with the same association as `A`.
@@ -340,19 +334,16 @@ impl<T: 'static> Res<T> {
         A: Associated,
     {
         let assoc = assoc.assoc_inner().clone();
-        Self {
-            scope: assoc.clone(),
-            data: Rc::new_cyclic(move |weak| {
-                let weak = WeakRes::new(assoc, weak.clone());
-                UnsafeCell::new((data_fn)(&weak))
-            }),
-        }
+        Self(Rc::new_cyclic(move |weak| {
+            let weak = WeakRes::new(weak.clone());
+            ResInner::new(assoc, (data_fn)(&weak))
+        }))
     }
 }
 
 impl<T: ?Sized + 'static> Res<T> {
-    fn new_raw(scope: Rc<AssocInner>, data: Rc<UnsafeCell<T>>) -> Self {
-        Self { scope, data }
+    fn new_raw(data: Rc<ResInner<T>>) -> Self {
+        Self(data)
     }
 
     /// Creates a new handle for mutation chaining.
@@ -439,7 +430,7 @@ impl<T: ?Sized + 'static> Res<T> {
     /// ```
     pub fn via<'a: 'b, 'b, A: 'static>(self, source: &'a mut Mut<A>) -> Mut<'b, T> {
         assert!(
-            Rc::ptr_eq(&self.scope, source.scope),
+            Rc::ptr_eq(&self.0.scope, &source.data.0.scope),
             "assoc is not identical"
         );
 
@@ -453,57 +444,64 @@ impl<T: ?Sized + 'static> Res<T> {
     ///
     /// See [Rc::downgrade].
     pub fn downgrade(this: &Res<T>) -> WeakRes<T> {
-        WeakRes::new(this.scope.clone(), Rc::downgrade(&this.data))
+        WeakRes::new(Rc::downgrade(&this.0))
     }
 
     // SAFETY: Caller must ensure no mutable reference to `T` is live.
     unsafe fn as_ref(&self) -> &T {
         // SAFETY: Function is marked as unsafe. See function comment.
-        unsafe { &*self.data.get() }
+        unsafe { &*self.0.data.get() }
     }
 
     // SAFETY: Caller must ensure no other reference to `T` is live.
     #[allow(clippy::mut_from_ref)]
     unsafe fn as_mut(&self) -> &mut T {
         // SAFETY: Function is marked as unsafe. See function comment.
-        unsafe { &mut *self.data.get() }
+        unsafe { &mut *self.0.data.get() }
     }
 }
 
 impl<T: ?Sized + 'static> Clone for Res<T> {
     fn clone(&self) -> Self {
-        Self {
-            scope: self.scope.clone(),
-            data: self.data.clone(),
-        }
+        Self(self.0.clone())
     }
 }
 
 impl<T: ?Sized + Unsize<U>, U: ?Sized> CoerceUnsized<Res<U>> for Res<T> {}
 
+struct ResInner<T: ?Sized + 'static> {
+    scope: Rc<AssocInner>,
+    data: UnsafeCell<T>,
+}
+
+impl<T: 'static> ResInner<T> {
+    fn new(scope: Rc<AssocInner>, data: T) -> Self {
+        Self {
+            scope,
+            data: UnsafeCell::new(data),
+        }
+    }
+}
+
 /// Non-owning version of [Res] similar to [Weak].
 pub struct WeakRes<T: ?Sized + 'static> {
-    scope: Rc<AssocInner>,
-    data: Weak<UnsafeCell<T>>,
+    data: Weak<ResInner<T>>,
 }
 
 impl<T: ?Sized + 'static> WeakRes<T> {
-    fn new(scope: Rc<AssocInner>, data: Weak<UnsafeCell<T>>) -> Self {
-        Self { scope, data }
+    fn new(weak: Weak<ResInner<T>>) -> Self {
+        Self { data: weak }
     }
 
     /// Attempts to upgrade to a strong reference
     pub fn upgrade(&self) -> Option<Res<T>> {
-        self.data
-            .upgrade()
-            .map(|strong| Res::new_raw(self.scope.clone(), strong))
+        self.data.upgrade().map(|strong| Res::new_raw(strong))
     }
 }
 
 impl<T: ?Sized + 'static> Clone for WeakRes<T> {
     fn clone(&self) -> Self {
         Self {
-            scope: self.scope.clone(),
             data: self.data.clone(),
         }
     }
@@ -517,7 +515,7 @@ impl<T: ?Sized + Unsize<U>, U: ?Sized> CoerceUnsized<WeakRes<U>> for WeakRes<T> 
 /// While this guard exists, other borrows through the same association are
 /// suspended to prevent aliasing.
 pub struct Mut<'a, T: ?Sized + 'static> {
-    scope: &'a Rc<AssocInner>,
+    scope: PhantomData<&'a ()>,
     data: Res<T>,
 }
 
