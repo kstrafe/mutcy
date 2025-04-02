@@ -38,38 +38,38 @@
 //! let a = Res::new_in(A { b: None, x: 0 }, &assoc);
 //! let b = Res::new_in(B { a: a.clone(), y: 0 }, &assoc);
 //!
-//! // Enter the association. This gives us a `Mut` which allows us to convert `Res` into `Mut`.
-//! assoc.enter(|x: &mut Mut<()>| {
-//!     // Before we can mutate `a`, we need to call `mutate().via(x)`. This relinquishes all existing
-//!     // borrows acquired via `x`'s Deref/DerefMut implementation.
-//!     a.mutate().via(x).b = Some(b);
+//! // Acquire the initial `Mut` which we need to access `Res` objects.
+//! let key: &mut Mut<()> = &mut assoc.key();
 //!
-//!     // Call a method on `A`
-//!     a.mutate().via(x).call_a(5);
+//! // Before we can mutate `a`, we need to call `mutate().via(x)`. This relinquishes all existing
+//! // borrows acquired via `x`'s Deref/DerefMut implementation.
+//! a.mutate().via(key).b = Some(b);
 //!
-//!     // You can store the created `Mut` from `via` onto the stack.
-//!     let mut a_mut: Mut<A> = a.mutate().via(x);
+//! // Call a method on `A`
+//! a.mutate().via(key).call_a(5);
 //!
-//!     // Note, the following fails to compile because of `a_mut`'s dependency on `x`. This prevents
-//!     // Rust's requirements for references from being violated.
+//! // You can store the created `Mut` from `via` onto the stack.
+//! let mut a_mut: Mut<A> = a.mutate().via(key);
 //!
-//!     // let _: () = **x;
+//! // Note, the following fails to compile because of `a_mut`'s dependency on `x`. This prevents
+//! // Rust's requirements for references from being violated.
 //!
-//!     // error[E0502]: cannot borrow `*x` as immutable because it is also borrowed as mutable
-//!     //   --> src/lib.rs:38:18
-//!     //    |
-//!     // 26 |     let mut a_mut: Mut<A> = a.mutate().via(x);
-//!     //    |                                    - mutable borrow occurs here
-//!     // ...
-//!     // 31 |     let _: () = **x;
-//!     //    |                  ^^ immutable borrow occurs here
-//!     // ...
-//!     // 46 |     a_mut.my_method();
-//!     //    |     ----- mutable borrow later used here
+//! // let _: () = **key;
 //!
-//!     // Because this `Mut` (`a_mut`) still exists.
-//!     a_mut.my_method();
-//! });
+//! // error[E0502]: cannot borrow `*x` as immutable because it is also borrowed as mutable
+//! //   --> src/lib.rs:38:18
+//! //    |
+//! // 27 |     let mut a_mut: Mut<A> = a.mutate().via(x);
+//! //    |                                    - mutable borrow occurs here
+//! // ...
+//! // 32 |     let _: () = **x;
+//! //    |                  ^^ immutable borrow occurs here
+//! // ...
+//! // 47 |     a_mut.my_method();
+//! //    |     ----- mutable borrow later used here
+//!
+//! // Because this `Mut` (`a_mut`) still exists.
+//! a_mut.my_method();
 //!
 //! struct A {
 //!     b: Option<Res<B>>,
@@ -208,10 +208,38 @@ impl Assoc {
         Self::default()
     }
 
+    /// Acquire the key to the association allowing you to perform operations on
+    /// [Res].
+    ///
+    /// The returned key is just a [Mut] to `()`. You can use this object as the
+    /// key in [Res::via].
+    ///
+    /// ```
+    /// use mutcy::{Assoc, Res};
+    ///
+    /// let mut assoc = Assoc::new();
+    /// let key = &mut assoc.key();
+    ///
+    /// // You can use the key, `Assoc`, or another `Res` as an argument to `Res::new_in`.
+    /// let resource = Res::new_in(123, key);
+    /// *resource.via(key) += 1;
+    /// ```
+    pub fn key<'a>(&'a mut self) -> Mut<'a, ()> {
+        Mut {
+            scope: PhantomData,
+            data: self.1.clone(),
+        }
+    }
+
     /// Enters the association context to perform mutations.
     ///
     /// Grants you the initial [Mut] used to transform [Res] using
     /// [via](Res::via).
+    ///
+    /// Similar to [Assoc::key] but enters a function instead. The plan is to
+    /// use this with a scoped thread local to allow together with
+    /// `Res::new` to create `Res` objects without having to provide the
+    /// association manually.
     pub fn enter<F: FnOnce(&mut Mut<()>) -> R, R>(&mut self, work: F) -> R {
         let mut item: Mut<()> = Mut {
             scope: PhantomData,
@@ -369,19 +397,6 @@ impl<T: ?Sized + 'static> Res<T> {
     /// }
     /// ```
     ///
-    /// Correct usage with cloning:
-    /// ```
-    /// # #![feature(arbitrary_self_types)]
-    /// # use mutcy::{Mut,Res};
-    /// # struct MyType { inner: Res<u8> }
-    /// impl MyType {
-    ///     fn method(self: &mut Mut<Self>) {
-    ///         // Clone first to avoid overlapping borrows
-    ///         self.inner.mutate().via(self);
-    ///     }
-    /// }
-    /// ```
-    ///
     /// [`via`]: Res::via
     pub fn mutate(&self) -> Self {
         self.clone()
@@ -440,7 +455,7 @@ impl<T: ?Sized + 'static> Res<T> {
         }
     }
 
-    /// Create a weakly referencing to this `Res`.
+    /// Create a weakly referencing version this `Res`.
     ///
     /// See [Rc::downgrade].
     pub fn downgrade(this: &Res<T>) -> WeakRes<T> {
@@ -513,7 +528,7 @@ impl<T: ?Sized + Unsize<U>, U: ?Sized> CoerceUnsized<WeakRes<U>> for WeakRes<T> 
 ///
 /// Implements [`Deref`]/[`DerefMut`] for direct access to the underlying value.
 /// While this guard exists, other borrows through the same association are
-/// suspended to prevent aliasing.
+/// suspended to prevent mutable aliasing.
 pub struct Mut<'a, T: ?Sized + 'static> {
     scope: PhantomData<&'a ()>,
     data: Res<T>,
