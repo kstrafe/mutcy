@@ -1,6 +1,8 @@
 # Mutcy
 
-Safe mutable cyclic borrows using borrow relinquishing
+Safe mutable cyclic borrows using borrow relinquishing.
+
+Rust nightly is required due to unstable features being used.
 
 [![crates.io](https://img.shields.io/crates/v/mutcy?label=latest)](https://crates.io/crates/mutcy)
 [![Documentation](https://docs.rs/mutcy/badge.svg?version=latest)](https://docs.rs/mutcy/latest)
