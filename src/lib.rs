@@ -356,7 +356,8 @@ impl<T: 'static> Res<T> {
         ASSOC.with(|assoc| Self::new_in(data, assoc))
     }
 
-    /// Create a new cyclic `Res` associated with the currently [enter](Assoc::enter)ed [Assoc].
+    /// Create a new cyclic `Res` associated with the currently
+    /// [enter](Assoc::enter)ed [Assoc].
     ///
     /// # Panics
     ///
