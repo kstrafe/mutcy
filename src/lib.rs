@@ -557,26 +557,22 @@ impl<T: 'static> ResInner<T> {
 }
 
 /// Non-owning version of [Res] similar to [Weak].
-pub struct WeakRes<T: ?Sized + 'static> {
-    data: Weak<ResInner<T>>,
-}
+pub struct WeakRes<T: ?Sized + 'static>(Weak<ResInner<T>>);
 
 impl<T: ?Sized + 'static> WeakRes<T> {
     fn new(weak: Weak<ResInner<T>>) -> Self {
-        Self { data: weak }
+        Self(weak)
     }
 
     /// Attempts to upgrade to a strong reference
     pub fn upgrade(&self) -> Option<Res<T>> {
-        self.data.upgrade().map(|strong| Res::new_raw(strong))
+        self.0.upgrade().map(|strong| Res::new_raw(strong))
     }
 }
 
 impl<T: ?Sized + 'static> Clone for WeakRes<T> {
     fn clone(&self) -> Self {
-        Self {
-            data: self.data.clone(),
-        }
+        Self(self.0.clone())
     }
 }
 
