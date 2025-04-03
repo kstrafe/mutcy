@@ -421,7 +421,7 @@ impl<T: 'static> Res<T> {
     {
         let assoc = assoc.assoc_inner().clone();
         Self(Rc::new_cyclic(move |weak| {
-            let weak = WeakRes::new(weak.clone());
+            let weak = WeakRes::new_internal(weak.clone());
             ResInner::new(assoc, (data_fn)(&weak))
         }))
     }
@@ -517,7 +517,7 @@ impl<T: ?Sized + 'static> Res<T> {
     ///
     /// See [Rc::downgrade].
     pub fn downgrade(this: &Res<T>) -> WeakRes<T> {
-        WeakRes::new(Rc::downgrade(&this.0))
+        WeakRes::new_internal(Rc::downgrade(&this.0))
     }
 
     // SAFETY: Caller must ensure no mutable reference to `T` is live.
@@ -559,8 +559,16 @@ impl<T: 'static> ResInner<T> {
 /// Non-owning version of [Res] similar to [Weak].
 pub struct WeakRes<T: ?Sized + 'static>(Weak<ResInner<T>>);
 
+impl<T: 'static> WeakRes<T> {
+    /// Constructs a new `WeakRes<T>`, without allocating any memory. Calling
+    /// upgrade on the return value always gives `None`.
+    pub fn new() -> Self {
+        Self(Weak::new())
+    }
+}
+
 impl<T: ?Sized + 'static> WeakRes<T> {
-    fn new(weak: Weak<ResInner<T>>) -> Self {
+    fn new_internal(weak: Weak<ResInner<T>>) -> Self {
         Self(weak)
     }
 
@@ -577,6 +585,12 @@ impl<T: ?Sized + 'static> Clone for WeakRes<T> {
 }
 
 impl<T: ?Sized + Unsize<U>, U: ?Sized> CoerceUnsized<WeakRes<U>> for WeakRes<T> {}
+
+impl<T> Default for WeakRes<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// Mutable borrow guard providing access to associated data.
 ///
