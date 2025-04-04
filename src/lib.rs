@@ -29,26 +29,32 @@
 //!
 //! ```
 //! #![feature(arbitrary_self_types)]
-//! use mutcy::{Mut, Own, Res};
+//! use mutcy::{Mut, Own, Res, WeakRes};
 //!
 //! // Create a new association for our data. Every `Res` is associated with some root `Own`.
 //! let mut assoc = &mut Own::new();
 //!
 //! // Create two associated objects. See [Res::new] on how to avoid having to pass `assoc`.
-//! let a = Res::new_in(A { b: None, x: 0 }, assoc);
+//! let a = Res::new_in(
+//!     A {
+//!         b: WeakRes::new(),
+//!         x: 0,
+//!     },
+//!     assoc,
+//! );
 //! let b = Res::new_in(B { a: a.clone(), y: 0 }, assoc);
 //!
 //! // Before we can access `a`, we need to call `own().via(x)`. This relinquishes all existing
 //! // borrows acquired via `assoc`'s Deref/DerefMut implementation.
-//! a.own().via(assoc).b = Some(b);
+//! a.own().via(assoc).b = Res::downgrade(&b);
 //!
 //! // Call a method on `A`
 //! a.own().via(assoc).call_a(5);
 //!
 //! // You can store the created `Own` from `via` onto the stack.
-//! let mut a_mut: Own<A> = a.own().via(assoc);
+//! let mut a_own: Own<A> = a.own().via(assoc);
 //!
-//! // Note, the following fails to compile because of `a_mut`'s dependency on `x`. This prevents
+//! // Note, the following fails to compile because of `a_own`'s dependency on `x`. This prevents
 //! // Rust's requirements for references from being violated.
 //!
 //! // let _: () = **assoc;
@@ -56,20 +62,20 @@
 //! // error[E0502]: cannot borrow `*assoc` as immutable because it is also borrowed as mutable
 //! //   --> src/lib.rs:56:14
 //! //    |
-//! // 24 | let mut a_mut: Own<A> = a.own().via(assoc);
-//! //    |                                        ----- mutable borrow occurs here
+//! // 30 | let mut a_own: Own<A> = a.own().via(assoc);
+//! //    |                                     ----- mutable borrow occurs here
 //! // ...
-//! // 29 | let _: () = **assoc;
+//! // 35 | let _: () = **assoc;
 //! //    |              ^^^^^^ immutable borrow occurs here
 //! // ...
-//! // 44 | a_mut.my_method();
+//! // 50 | a_own.my_method();
 //! //    | ----- mutable borrow later used here
 //!
-//! // Because this `Own` (`a_mut`) still exists.
-//! a_mut.my_method();
+//! // Because this `Own` (`a_own`) still exists.
+//! a_own.my_method();
 //!
 //! struct A {
-//!     b: Option<Res<B>>,
+//!     b: WeakRes<B>,
 //!     x: i32,
 //! }
 //!
@@ -80,31 +86,12 @@
 //!         self.x += 1;
 //!
 //!         println!(">>> A: {}", count);
-//!         self.b
-//!             .as_ref()
-//!             .unwrap()
-//!             .own()
-//!             .via(self)
-//!             .call_b(count - 1);
+//!         self.b.upgrade().unwrap().via(self).call_b(count - 1);
 //!         println!("<<< A: {}", count);
 //!
 //!         // Mutate again, this is valid after the call to `b` which has called back into here
 //!         // because we reborrow &mut Self here.
 //!         self.x -= 1;
-//!     }
-//!
-//!     fn remove_b(self: Mut<Self>) {
-//!         // This does not drop `B` even though it's the only direct `Res<B>` object referring
-//!         // to the underlying data.
-//!
-//!         // The call stack will still refer to this `B` after this call finishes.
-//!
-//!         // Because `b` was invoked on as `self.b.as_ref().unwrap().own().via(self)`, we have
-//!         // created a clone of the `Res<B>` (`own()` does this) at multiple locations on the call stack.
-//!
-//!         // This ensures that `B` will exist as long as some part of the call stack is still
-//!         // using it.
-//!         self.b = None;
 //!     }
 //!
 //!     fn my_method(self: Mut<Self>) {
@@ -131,8 +118,6 @@
 //!         let mut a = self.a.own().via(self);
 //!         if count > 1 {
 //!             a.call_a(count - 1);
-//!         } else {
-//!             a.remove_b();
 //!         }
 //!         println!("<<< B: {}", count);
 //!
@@ -161,6 +146,20 @@
 //! inputs are equal, otherwise, we panic. This ensures that we can never have
 //! more than one dereferencable `Own` simultaneously, which could cause
 //! undefined behavior.
+//!
+//! # Preventing leaks
+//!
+//! We need to be aware whenever a struct declares an `Option<Res<_>>` (or any
+//! other container of `Res`) that needs to be populated from outside after
+//! initialization. This indicates that we may have a potential leak, as we can
+//! create a reference cycle.
+//!
+//! To avoid leaks, make a struct take in `Res` during construction only. It is
+//! also not leaky to create and store `Res` objects from within the struct.
+//! It's mainly the transfer of these to other objects that creates leaks.
+//!
+//! If you still need to clone a `Res` into some struct, consider
+//! [Res::downgrade] to create a [WeakRes].
 //!
 //! # Drop guarantees
 //!
