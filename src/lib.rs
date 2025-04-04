@@ -242,14 +242,14 @@ impl seal::Sealed for Rc<AssocInner> {
 #[allow(private_interfaces)]
 impl<'a, T: 'static> seal::Sealed for Mut<'a, T> {
     fn assoc_inner(&self) -> &Rc<AssocInner> {
-        &self.data.0.scope
+        &self.data.0.assoc
     }
 }
 
 #[allow(private_interfaces)]
 impl<T> seal::Sealed for Res<T> {
     fn assoc_inner(&self) -> &Rc<AssocInner> {
-        &self.0.scope
+        &self.0.assoc
     }
 }
 
@@ -454,12 +454,12 @@ impl<T: ?Sized + 'static> Res<T> {
     /// ```
     pub fn via<'a: 'b, 'b, A: 'static>(self, source: &'a mut Mut<A>) -> Mut<'b, T> {
         assert!(
-            Rc::ptr_eq(&self.0.scope, &source.data.0.scope),
+            Rc::ptr_eq(&self.0.assoc, &source.data.0.assoc),
             "assoc is not identical"
         );
 
         Mut {
-            scope: source.scope,
+            assoc: source.assoc,
             data: self,
         }
     }
@@ -494,14 +494,14 @@ impl<T: ?Sized + 'static> Clone for Res<T> {
 impl<T: ?Sized + Unsize<U>, U: ?Sized> CoerceUnsized<Res<U>> for Res<T> {}
 
 struct ResInner<T: ?Sized + 'static> {
-    scope: Rc<AssocInner>,
+    assoc: Rc<AssocInner>,
     data: UnsafeCell<T>,
 }
 
 impl<T: 'static> ResInner<T> {
-    fn new(scope: Rc<AssocInner>, data: T) -> Self {
+    fn new(assoc: Rc<AssocInner>, data: T) -> Self {
         Self {
-            scope,
+            assoc,
             data: UnsafeCell::new(data),
         }
     }
@@ -576,7 +576,7 @@ impl<T> Default for WeakRes<T> {
 /// // assert_eq!(*res_mut, 123);
 /// ```
 pub struct Mut<'a, T: ?Sized + 'static> {
-    scope: PhantomData<&'a ()>,
+    assoc: PhantomData<&'a ()>,
     data: Res<T>,
 }
 
@@ -584,7 +584,7 @@ impl Mut<'static, ()> {
     /// Create a new initial `Mut` with a new association.
     pub fn new() -> Self {
         Self {
-            scope: PhantomData,
+            assoc: PhantomData,
             data: Res(Rc::new(ResInner::new(Rc::new(AssocInner), ()))),
         }
     }
@@ -595,7 +595,7 @@ impl Mut<'static, ()> {
     /// allows you to call [Res::new] and [new_cyclic](Res::new_cyclic) without
     /// a panic.
     pub fn enter<F: FnOnce(&mut Mut<()>) -> R, R>(&mut self, work: F) -> R {
-        ASSOC.set(&self.data.0.scope.clone(), || (work)(self))
+        ASSOC.set(&self.data.0.assoc.clone(), || (work)(self))
     }
 }
 
