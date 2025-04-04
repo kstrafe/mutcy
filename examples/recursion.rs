@@ -1,5 +1,5 @@
 #![feature(arbitrary_self_types)]
-use mutcy::{Mut, Res};
+use mutcy::{Mut, Own, Res};
 
 fn main() {
     struct A {
@@ -7,18 +7,18 @@ fn main() {
     }
 
     impl A {
-        fn subtract_and_call(self: &mut Mut<Self>, count: usize) {
+        fn subtract_and_call(self: Mut<Self>, count: usize) {
             println!("--> A: {}", count);
             self.b
                 .as_ref()
                 .unwrap()
-                .mutate()
+                .own()
                 .via(self)
                 .subtract_and_call(count - 1);
             println!("<-- A: Unwinding {}", count);
         }
 
-        fn remove_b(self: &mut Mut<Self>) {
+        fn remove_b(self: Mut<Self>) {
             self.b = None;
         }
     }
@@ -34,9 +34,9 @@ fn main() {
     }
 
     impl B {
-        fn subtract_and_call(self: &mut Mut<Self>, count: usize) {
+        fn subtract_and_call(self: Mut<Self>, count: usize) {
             println!("--> B: {}", count);
-            let mut a = self.a.mutate().via(self);
+            let mut a = self.a.own().via(self);
             if count > 1 {
                 a.subtract_and_call(count - 1);
             } else {
@@ -52,13 +52,13 @@ fn main() {
         }
     }
 
-    let assoc = &mut Mut::new();
+    let assoc = &mut Own::new();
 
     let a = Res::new_in(A { b: None }, assoc);
     let b = Res::new_in(B { a: a.clone() }, assoc);
 
     assoc.enter(move |x| {
-        let mut ax = a.mutate().via(x);
+        let mut ax = a.own().via(x);
         ax.b = Some(b.clone());
         ax.subtract_and_call(10);
     });

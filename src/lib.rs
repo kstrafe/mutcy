@@ -1,4 +1,4 @@
-//! # Mutable Cyclic Borrows #
+//! # Mutable Cyclic Borrows
 //!
 //! Safe mutable cyclic borrows using borrow relinquishing.
 //!
@@ -14,39 +14,39 @@
 //! calls `A` (`B -> A`), there are no live references to `A`. When `B`
 //! returns, `A`'s borrow is reacquired.
 //!
-//! # Note #
+//! # Note
 //!
 //! This crate currently requires *nightly* Rust.
 //!
-//! Note that arbitrary self types `fn name(self: &mut Mut<T>)` are not yet
+//! Note that arbitrary self types `fn name(self: Mut<T>)` are not yet
 //! stable. These can be used on nightly using
 //! `#![feature(arbitrary_self_types)]`.
 //!
 //! While it is possible to use this crate without `arbitrary_self_types`, it
 //! makes working with this crate impractical.
 //!
-//! # Example #
+//! # Example
 //!
 //! ```
 //! #![feature(arbitrary_self_types)]
-//! use mutcy::{Mut, Res};
+//! use mutcy::{Mut, Own, Res};
 //!
-//! // Create a new association for our data. Every `Res` is associated with some root `Mut`.
-//! let mut assoc = &mut Mut::new();
+//! // Create a new association for our data. Every `Res` is associated with some root `Own`.
+//! let mut assoc = &mut Own::new();
 //!
 //! // Create two associated objects. See [Res::new] on how to avoid having to pass `assoc`.
 //! let a = Res::new_in(A { b: None, x: 0 }, assoc);
 //! let b = Res::new_in(B { a: a.clone(), y: 0 }, assoc);
 //!
-//! // Before we can mutate `a`, we need to call `mutate().via(x)`. This relinquishes all existing
-//! // borrows acquired via `x`'s Deref/DerefMut implementation.
-//! a.mutate().via(assoc).b = Some(b);
+//! // Before we can access `a`, we need to call `own().via(x)`. This relinquishes all existing
+//! // borrows acquired via `assoc`'s Deref/DerefMut implementation.
+//! a.own().via(assoc).b = Some(b);
 //!
 //! // Call a method on `A`
-//! a.mutate().via(assoc).call_a(5);
+//! a.own().via(assoc).call_a(5);
 //!
-//! // You can store the created `Mut` from `via` onto the stack.
-//! let mut a_mut: Mut<A> = a.mutate().via(assoc);
+//! // You can store the created `Own` from `via` onto the stack.
+//! let mut a_mut: Own<A> = a.own().via(assoc);
 //!
 //! // Note, the following fails to compile because of `a_mut`'s dependency on `x`. This prevents
 //! // Rust's requirements for references from being violated.
@@ -56,7 +56,7 @@
 //! // error[E0502]: cannot borrow `*assoc` as immutable because it is also borrowed as mutable
 //! //   --> src/lib.rs:56:14
 //! //    |
-//! // 24 | let mut a_mut: Mut<A> = a.mutate().via(assoc);
+//! // 24 | let mut a_mut: Own<A> = a.own().via(assoc);
 //! //    |                                        ----- mutable borrow occurs here
 //! // ...
 //! // 29 | let _: () = **assoc;
@@ -65,7 +65,7 @@
 //! // 44 | a_mut.my_method();
 //! //    | ----- mutable borrow later used here
 //!
-//! // Because this `Mut` (`a_mut`) still exists.
+//! // Because this `Own` (`a_mut`) still exists.
 //! a_mut.my_method();
 //!
 //! struct A {
@@ -74,7 +74,8 @@
 //! }
 //!
 //! impl A {
-//!     fn call_a(self: &mut Mut<Self>, count: usize) {
+//!     // `Mut` is a type alias to `&mut Own`.
+//!     fn call_a(self: Mut<Self>, count: usize) {
 //!         // Mutate through &mut Self.
 //!         self.x += 1;
 //!
@@ -82,7 +83,7 @@
 //!         self.b
 //!             .as_ref()
 //!             .unwrap()
-//!             .mutate()
+//!             .own()
 //!             .via(self)
 //!             .call_b(count - 1);
 //!         println!("<<< A: {}", count);
@@ -92,21 +93,21 @@
 //!         self.x -= 1;
 //!     }
 //!
-//!     fn remove_b(self: &mut Mut<Self>) {
+//!     fn remove_b(self: Mut<Self>) {
 //!         // This does not drop `B` even though it's the only direct `Res<B>` object referring
 //!         // to the underlying data.
 //!
 //!         // The call stack will still refer to this `B` after this call finishes.
 //!
-//!         // Because `b` was invoked on as `self.b.as_ref().unwrap().mutate().via(self)`, we have
-//!         // created a clone of the `Res<B>` (`mutate()` does this) at multiple locations on the call stack.
+//!         // Because `b` was invoked on as `self.b.as_ref().unwrap().own().via(self)`, we have
+//!         // created a clone of the `Res<B>` (`own()` does this) at multiple locations on the call stack.
 //!
 //!         // This ensures that `B` will exist as long as some part of the call stack is still
 //!         // using it.
 //!         self.b = None;
 //!     }
 //!
-//!     fn my_method(self: &mut Mut<Self>) {
+//!     fn my_method(self: Mut<Self>) {
 //!         self.x += 1;
 //!     }
 //! }
@@ -123,11 +124,11 @@
 //! }
 //!
 //! impl B {
-//!     fn call_b(self: &mut Mut<Self>, count: usize) {
+//!     fn call_b(self: Mut<Self>, count: usize) {
 //!         self.y += 1;
 //!
 //!         println!(">>> B: {}", count);
-//!         let mut a = self.a.mutate().via(self);
+//!         let mut a = self.a.own().via(self);
 //!         if count > 1 {
 //!             a.call_a(count - 1);
 //!         } else {
@@ -148,33 +149,34 @@
 //!
 //! # What is an association?
 //!
-//! Each pointer type ([Res], [Mut]) belongs to an association. This is
+//! Each pointer type ([Own], [Res]) belongs to an association. This is
 //! just a unique number (currently, it is a pointer to non-ZST data that was
 //! allocated, guaranteeing uniqueness via the global allocator).
 //!
-//! When we use [Mut::new], we create a new association. `Res` can be
-//! associated with this `Mut` upon construction. [Res::via] takes `(self, &mut
-//! Mut)` and returns a `Mut` to `self`. This
-//! relinquishes access to the input `&mut Mut<A>`, and "opens" the `Res<B>`
-//! into a dereferencable `Mut<B>`. We assert that the associations of the two
+//! When we use [Own::new], we create a new association. `Res` can be
+//! associated with this `Own` upon construction. [Res::via] takes `(self, &mut
+//! Own)` and returns a `Own` to `self`. This
+//! relinquishes access to the input `Own<A>`, and "opens" the `Res<B>`
+//! into a dereferencable `Own<B>`. We assert that the associations of the two
 //! inputs are equal, otherwise, we panic. This ensures that we can never have
-//! more than one dereferencable `Mut` simultaneously, which could cause
+//! more than one dereferencable `Own` simultaneously, which could cause
 //! undefined behavior.
 //!
 //! # Drop guarantees
 //!
-//! The system maintains object validity through two invariants:
+//! The system maintains object validity through the following conditions.
 //!
-//! 1. An object `T` will only be dropped when:
-//!    - All [`Res<T>`] pointing to it have been dropped.
-//!    - All [`Mut<T>`] pointing to it have been dropped.
+//! - An object `T` will only be dropped when:
+//!    1. All [`Res<T>`] pointing to it have been dropped.
+//!    2. All [`Own<T>`] pointing to it have been dropped.
 //!
 //! This prevents dangling references in call chains like:
 //! ```text
 //! A → B → A // Last A access can remove B from itself, into which we return.
 //! ```
 //!
-//! When the call stack returns into B, it will still exist and be valid.
+//! When the call stack returns into B, it will still exist and be valid,
+//! because we have cloned `B` using [Res::own] to the stack.
 //!
 //! ## Example Scenario
 //! ```
@@ -185,9 +187,9 @@
 //!     parent: Option<Res<Node>>,
 //! }
 //!
-//! fn traverse(node: &mut Mut<Node>) {
+//! fn traverse(node: Mut<Node>) {
 //!     if let Some(child) = &node.child {
-//!         child.mutate().via(node).parent = None; // Would invalidate parent
+//!         child.own().via(node).parent = None; // Would invalidate parent
 //!         // Without guarantees, this could access freed memory:
 //!         println!("Parent data: {:?}", node.name);
 //!     }
@@ -200,11 +202,11 @@
 //! - `parent = None` only marks the relationship, doesn't drop immediately.
 //! - Final `println` safely accesses still-allocated parent.
 //!
-//! Dropping `T` occurs immediately when all `Res<T>` and `Mut<T>` objects
+//! Dropping `T` occurs immediately when all `Res<T>` and `Own<T>` objects
 //! for that instance of `T` have been dropped.
 //!
 //! Deallocation of memory backing that
-//! `T` occurs immediately if `T` was dropped and no [WeakRes] instances to that
+//! `T` occurs once `T` was dropped and no [WeakRes] instances to that
 //! `T` exist.
 #![feature(arbitrary_self_types)]
 #![feature(coerce_unsized)]
@@ -217,6 +219,13 @@ use std::{
 };
 
 scoped_tls::scoped_thread_local!(static ASSOC: Rc<AssocInner>);
+
+/// Convenience type over [Own] allowing self methods as `self: Mut<Self>`.
+///
+/// It is possible to write `self: &mut Own<Self>` but it's quite noisy. This
+/// type serves as a convenience wrapper for methods such that they can be
+/// written as `self: Mut<Self>`.
+pub type Mut<'a, 'b, T> = &'a mut Own<'b, T>;
 
 mod seal {
     use crate::AssocInner;
@@ -240,7 +249,7 @@ impl seal::Sealed for Rc<AssocInner> {
 }
 
 #[allow(private_interfaces)]
-impl<'a, T: 'static> seal::Sealed for Mut<'a, T> {
+impl<'a, T: 'static> seal::Sealed for Own<'a, T> {
     fn assoc_inner(&self) -> &Rc<AssocInner> {
         &self.data.0.assoc
     }
@@ -256,7 +265,7 @@ impl<T> seal::Sealed for Res<T> {
 #[doc(hidden)]
 impl Associated for Rc<AssocInner> {}
 impl<T: 'static> Associated for Res<T> {}
-impl<'a, T: 'static> Associated for Mut<'a, T> {}
+impl<'a, T: 'static> Associated for Own<'a, T> {}
 
 pub(crate) struct AssocInner;
 
@@ -265,10 +274,10 @@ pub(crate) struct AssocInner;
 /// This item's `T` can only be mutably accessed using [via](Res::via).
 ///
 /// ```
-/// use mutcy::{Mut, Res};
+/// use mutcy::{Mut, Own, Res};
 ///
-/// let mut assoc = &mut Mut::new();
-/// let item = Res::new_in(41, assoc);
+/// let mut assoc = Own::new();
+/// let item = Res::new_in(41, &assoc);
 ///
 /// let value: i32 = assoc.enter(|x| {
 ///     let mut data = item.via(x);
@@ -281,20 +290,20 @@ pub(crate) struct AssocInner;
 pub struct Res<T: ?Sized + 'static>(Rc<ResInner<T>>);
 
 impl<T: 'static> Res<T> {
-    /// Create a new `Res` associated to the currently [enter](Mut::enter)ed
+    /// Create a new `Res` associated to the currently [enter](Own::enter)ed
     /// association.
     ///
     /// # Panics
     ///
     /// This function will panic if not (transitively) called from within
-    /// [Mut::enter]'s `work` function.
+    /// [Own::enter]'s `work` function.
     ///
     /// # Examples
     ///
     /// ```
-    /// use mutcy::{Mut, Res};
+    /// use mutcy::{Mut, Own, Res};
     ///
-    /// let assoc = &mut Mut::new();
+    /// let mut assoc = Own::new();
     ///
     /// assoc.enter(|x| {
     ///     let item = Res::new(123);
@@ -308,18 +317,18 @@ impl<T: 'static> Res<T> {
     }
 
     /// Create a new cyclic `Res` associated with the currently
-    /// [enter](Mut::enter)ed association.
+    /// [enter](Own::enter)ed association.
     ///
     /// # Panics
     ///
     /// This function will panic if not (transitively) called from within
-    /// [Mut::enter]'s `work` function.
+    /// [Own::enter]'s `work` function.
     ///
     /// # Examples
     /// ```
-    /// use mutcy::{Mut, Res, WeakRes};
+    /// use mutcy::{Mut, Own, Res, WeakRes};
     ///
-    /// let assoc = &mut Mut::new();
+    /// let mut assoc = Own::new();
     ///
     /// struct MyItem(i32, WeakRes<Self>);
     ///
@@ -329,7 +338,7 @@ impl<T: 'static> Res<T> {
     ///     let mut data = item.via(x);
     ///     data.0 += 1;
     ///
-    ///     let data_reborrow = data.1.upgrade().unwrap().mutate().via(x);
+    ///     let data_reborrow = data.1.upgrade().unwrap().own().via(x);
     ///     assert_eq!(data_reborrow.0, 42);
     /// });
     /// ```
@@ -351,9 +360,9 @@ impl<T: 'static> Res<T> {
     ///
     /// See also [Rc::new_cyclic].
     /// ```
-    /// use mutcy::{Mut, Res, WeakRes};
+    /// use mutcy::{Mut, Own, Res, WeakRes};
     ///
-    /// let assoc = &mut Mut::new();
+    /// let assoc = &mut Own::new();
     ///
     /// struct MyItem(i32, WeakRes<Self>);
     /// let item = Res::new_cyclic_in(|weak| MyItem(41, weak.clone()), assoc);
@@ -362,7 +371,7 @@ impl<T: 'static> Res<T> {
     ///     let mut data = item.via(x);
     ///     data.0 += 1;
     ///
-    ///     let data_reborrow = data.1.upgrade().unwrap().mutate().via(x);
+    ///     let data_reborrow = data.1.upgrade().unwrap().own().via(x);
     ///     assert_eq!(data_reborrow.0, 42);
     /// });
     /// ```
@@ -397,31 +406,31 @@ impl<T: ?Sized + 'static> Res<T> {
     /// #    inner: Res<()>,
     /// # }
     /// impl MyType {
-    ///     fn method(self: &mut Mut<Self>) {
+    ///     fn method(self: Mut<Self>) {
     ///         // ERROR: Cannot borrow `self` mutably more than once
     ///         // self.inner.via(self);
     ///
     ///         // OK
-    ///         let inner = self.inner.mutate().via(self);
+    ///         let inner = self.inner.own().via(self);
     ///     }
     /// }
     /// ```
     ///
     /// [`via`]: Res::via
-    pub fn mutate(&self) -> Self {
+    pub fn own(&self) -> Self {
         self.clone()
     }
 
-    /// Relinquish a previous `Mut` and creates a `Mut` of `self`.
+    /// Relinquish a previous `Own` and creates an `Own` of `self`.
     ///
-    /// Since references to `T` from `Mut<T>` require [Deref] or [DerefMut],
-    /// calling this function will relinquish all such borrows on `Mut<T>`.
+    /// Since references to `T` from `Own<T>` require [Deref] or [DerefMut],
+    /// calling this function will relinquish all such borrows on `Own<T>`.
     /// This makes it safe to acquire a mutable reference recursively.
     ///
-    /// In effect, there exists only a single accessible `Mut<T>` for any
-    /// `Res<T>` in a single association. This function checks if the
-    /// association matches to prevent multiple `Mut<T>` being accessible
-    /// for a `Res<T>` in the same association.
+    /// In effect, there exists only a single accessible `Own<T>` for any
+    /// `Res<T>` in the same association. This function checks if the
+    /// association matches to prevent multiple `Own<T>` being accessible
+    /// within that association..
     ///
     /// # Panics
     ///
@@ -437,12 +446,12 @@ impl<T: ?Sized + 'static> Res<T> {
     /// }
     ///
     /// impl MyType {
-    ///     fn method(self: &mut Mut<Self>) {
+    ///     fn method(self: Mut<Self>) {
     ///         let value_reference: &mut i32 = &mut self.value;
     ///
     ///         // `via` relinquishes `value_reference`, because it has a dependency on
     ///         // `self` that conflicts with `via`.
-    ///         self.this.mutate().via(self);
+    ///         self.this.own().via(self);
     ///
     ///         // ERROR: We cannot now use `value_reference`.
     ///         // *value_reference += 1;
@@ -452,13 +461,13 @@ impl<T: ?Sized + 'static> Res<T> {
     ///     }
     /// }
     /// ```
-    pub fn via<'a: 'b, 'b, A: 'static>(self, source: &'a mut Mut<A>) -> Mut<'b, T> {
+    pub fn via<'a: 'b, 'b, A: 'static>(self, source: &'a mut Own<A>) -> Own<'b, T> {
         assert!(
             Rc::ptr_eq(&self.0.assoc, &source.data.0.assoc),
             "assoc is not identical"
         );
 
-        Mut {
+        Own {
             assoc: source.assoc,
             data: self,
         }
@@ -549,39 +558,39 @@ impl<T> Default for WeakRes<T> {
 /// While this guard exists, other borrows through the same association are
 /// suspended to prevent mutable aliasing.
 ///
-/// A `Mut<A>` uses `&mut self` to convert any `Res<B>` into a a `Mut<B>`. This
+/// A `Own<A>` uses `&mut self` to convert any `Res<B>` into a a `Own<B>`. This
 /// allows the transfer of mutability within an association. See also
 /// [Res::via].
 /// ```
-/// use mutcy::{Mut, Res};
+/// use mutcy::{Mut, Own, Res};
 ///
-/// // Create a new root `Mut`.
-/// let mut root: Mut<()> = Mut::new();
+/// // Create a new root `Own`.
+/// let mut root = &mut Own::new();
 ///
-/// // Create a new pointer associated with this root `Mut`.
-/// let res = Res::new_in(123, &root);
+/// // Create a new pointer associated with this root `Own`.
+/// let res = Res::new_in(123, root);
 ///
-/// // Transform the `Res` into a `Mut`, suspending the root `Mut` which relinquishes all existing
+/// // Transform the `Res` into an `Own`, suspending the root `Own` which relinquishes all existing
 /// // borrows on it. The new `res_mut` can then again be used with `via` to relinquish itself and
 /// // open up another `Res`.
-/// let res_mut: Mut<i32> = res.mutate().via(&mut root);
+/// let res_mut: Own<i32> = res.own().via(root);
 ///
 /// // Access the data inside `res` using `res_mut`.
 /// assert_eq!(*res_mut, 123);
 ///
 /// // When accessing root again, we relinquish `res_mut`. We are not allowed to use it again.
-/// assert_eq!(*root, ());
+/// assert_eq!(**root, ());
 ///
-/// // This would fail to compile, because we cannot hold the res_mut borrow over the root borrow.
+/// // This would fail to compile, because we cannot hold the `res_mut` borrow across the `root` borrow.
 /// // assert_eq!(*res_mut, 123);
 /// ```
-pub struct Mut<'a, T: ?Sized + 'static> {
+pub struct Own<'a, T: ?Sized + 'static> {
     assoc: PhantomData<&'a ()>,
     data: Res<T>,
 }
 
-impl Mut<'static, ()> {
-    /// Create a new initial `Mut` with a new association.
+impl Own<'static, ()> {
+    /// Create a new initial `Own` with a new association.
     pub fn new() -> Self {
         Self {
             assoc: PhantomData,
@@ -594,40 +603,40 @@ impl Mut<'static, ()> {
     /// Installs a [scoped_thread_local](scoped_tls::scoped_thread_local) that
     /// allows you to call [Res::new] and [new_cyclic](Res::new_cyclic) without
     /// a panic.
-    pub fn enter<F: FnOnce(&mut Mut<()>) -> R, R>(&mut self, work: F) -> R {
+    pub fn enter<F: FnOnce(&mut Own<()>) -> R, R>(&mut self, work: F) -> R {
         ASSOC.set(&self.data.0.assoc.clone(), || (work)(self))
     }
 }
 
-impl Default for Mut<'static, ()> {
+impl Default for Own<'static, ()> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<'a, T: ?Sized + 'static> Deref for Mut<'a, T> {
+impl<'a, T: ?Sized + 'static> Deref for Own<'a, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        // SAFETY: The existence and accessibility of this `Mut` guarantees that there
+        // SAFETY: The existence and accessibility of this `Own` guarantees that there
         // is no other live reference to this data.
         //
         // Using a different association followed by `Res::via` will result in a panic
         // as documented in `Res::via`. This guarantees that there exists only
-        // one accessible `Mut<T>` for a set or `Res` associated with an
+        // one accessible `Own<T>` for a set or `Res` associated with an
         // `Assoc`.
         unsafe { self.data.as_ref() }
     }
 }
 
-impl<'a, T: ?Sized + 'static> DerefMut for Mut<'a, T> {
+impl<'a, T: ?Sized + 'static> DerefMut for Own<'a, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        // SAFETY: The existence and accessibility of this `Mut` guarantees that there
+        // SAFETY: The existence and accessibility of this `Own` guarantees that there
         // is no other live reference to this data.
         //
         // Using a different `Assoc` followed by `Res::via` will result in a panic as
         // documented in `Res::via`. This guarantees that there exists only one
-        // accessible `Mut<T>` for a set or `Res` associated with an `Assoc`.
+        // accessible `Own<T>` for a set or `Res` associated with an `Assoc`.
         unsafe { self.data.as_mut() }
     }
 }

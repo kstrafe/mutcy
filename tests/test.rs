@@ -1,11 +1,11 @@
 #![feature(arbitrary_self_types)]
-use mutcy::{Mut, Res, WeakRes};
+use mutcy::{Mut, Own, Res, WeakRes};
 
 #[test]
 #[should_panic(expected = "assoc is not identical")]
 fn different_assocs() {
-    let assoc1 = Mut::new();
-    let mut assoc2 = Mut::new();
+    let assoc1 = Own::new();
+    let mut assoc2 = Own::new();
 
     let item = Res::new_in((), &assoc1);
     drop(assoc1);
@@ -23,16 +23,11 @@ fn deferred_destruction() {
     }
 
     impl A {
-        fn recur(self: &mut Mut<Self>, count: usize) {
+        fn recur(self: Mut<Self>, count: usize) {
             if count == 0 {
                 self.this = None;
             } else {
-                self.this
-                    .as_ref()
-                    .unwrap()
-                    .mutate()
-                    .via(self)
-                    .recur(count - 1)
+                self.this.as_ref().unwrap().own().via(self).recur(count - 1)
             }
         }
     }
@@ -43,7 +38,7 @@ fn deferred_destruction() {
         }
     }
 
-    let mut assoc = Mut::new();
+    let mut assoc = Own::new();
 
     let a = Res::new_in(
         A {
@@ -54,7 +49,7 @@ fn deferred_destruction() {
     );
 
     assoc.enter(|x| {
-        let mut a_mut = a.mutate().via(x);
+        let mut a_mut = a.own().via(x);
         a_mut.this = Some(a);
         a_mut.recur(10);
     });
@@ -62,7 +57,7 @@ fn deferred_destruction() {
 
 #[test]
 fn unsize_array_res() {
-    let key = &mut Mut::new();
+    let key = &mut Own::new();
 
     let array: Res<[u8]> = Res::new_in([0u8; 1024], key);
     array.via(key)[1023] = 123;
@@ -70,7 +65,7 @@ fn unsize_array_res() {
 
 #[test]
 fn unsize_array_weakres() {
-    let key = &mut Mut::new();
+    let key = &mut Own::new();
 
     let array: Res<[u8; 1024]> = Res::new_in([0u8; 1024], key);
     let weak: WeakRes<[u8; 1024]> = Res::downgrade(&array);
