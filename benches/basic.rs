@@ -4,7 +4,7 @@ use mutcy::*;
 
 fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("enter-scope", |bench| {
-        let mut assoc = Assoc::new();
+        let mut assoc = Mut::new();
         bench.iter(|| {
             assoc.enter(black_box(|_: &mut Mut<()>| {}));
         });
@@ -40,7 +40,7 @@ fn criterion_benchmark(c: &mut Criterion) {
             }
         }
 
-        let mut assoc = Assoc::new();
+        let mut assoc = Mut::new();
 
         assoc.enter(|key| {
             let a = Res::new(A { b: None });

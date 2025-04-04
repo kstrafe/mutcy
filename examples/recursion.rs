@@ -1,5 +1,5 @@
 #![feature(arbitrary_self_types)]
-use mutcy::{Assoc, Mut, Res};
+use mutcy::{Mut, Res};
 
 fn main() {
     struct A {
@@ -52,10 +52,10 @@ fn main() {
         }
     }
 
-    let mut assoc = Assoc::default();
+    let assoc = &mut Mut::new();
 
-    let a = Res::new_in(A { b: None }, &assoc);
-    let b = Res::new_in(B { a: a.clone() }, &assoc);
+    let a = Res::new_in(A { b: None }, assoc);
+    let b = Res::new_in(B { a: a.clone() }, assoc);
 
     assoc.enter(move |x| {
         let mut ax = a.mutate().via(x);

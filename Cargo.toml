@@ -1,6 +1,6 @@
 [package]
 name = "mutcy"
-version = "0.1.4"
+version = "0.2.0"
 edition = "2024"
 authors = ["Kevin Robert Stravers <kevin@stravers.net>"]
 description = "Safe mutable cyclic borrows using borrow relinquishing"
