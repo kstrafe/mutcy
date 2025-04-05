@@ -1,65 +1,48 @@
 #![feature(arbitrary_self_types)]
-use mutcy::{Mut, Own, Res};
+use mutcy::*;
+use std::rc::{Rc, Weak};
 
 fn main() {
+    let mut key = Key::acquire();
+
     struct A {
-        b: Option<Res<B>>,
+        b: Weak<KeyCell<B>>,
+    }
+
+    impl Meta for A {
+        type Data = ();
     }
 
     impl A {
-        fn subtract_and_call(self: Mut<Self>, count: usize) {
-            println!("--> A: {}", count);
-            self.b
-                .as_ref()
-                .unwrap()
-                .own()
-                .via(self)
-                .subtract_and_call(count - 1);
-            println!("<-- A: Unwinding {}", count);
-        }
+        fn work_a(self: KeyMut<Self>, value: i32) {
+            println!("A: {}", value);
 
-        fn remove_b(self: Mut<Self>) {
-            self.b = None;
+            if value < 10 {
+                let b = self.b.upgrade().unwrap();
+                let (_, key) = Key::split(self);
+                b.borrow_mut(key).work_b(value + 1);
+            }
         }
     }
 
-    impl Drop for A {
-        fn drop(&mut self) {
-            println!("A dropped");
-        }
-    }
+    struct B {}
 
-    struct B {
-        a: Res<A>,
+    impl Meta for B {
+        type Data = Rc<KeyCell<A>>;
     }
 
     impl B {
-        fn subtract_and_call(self: Mut<Self>, count: usize) {
-            println!("--> B: {}", count);
-            let mut a = self.a.own().via(self);
-            if count > 1 {
-                a.subtract_and_call(count - 1);
-            } else {
-                a.remove_b();
-            }
-            println!("<-- B: Unwinding {}", count);
+        fn work_b(self: KeyMut<Self>, value: i32) {
+            println!("B: {}", value);
+
+            let (this, key) = Key::split(self);
+            this.meta().borrow_mut(key).work_a(value + 1);
         }
     }
 
-    impl Drop for B {
-        fn drop(&mut self) {
-            println!("B dropped");
-        }
-    }
+    let a = Rc::new(KeyCell::new(A { b: Weak::new() }, ()));
+    let b = Rc::new(KeyCell::new(B {}, a.clone()));
+    a.borrow_mut(&mut key).b = Rc::downgrade(&b);
 
-    let assoc = &mut Own::new();
-
-    let a = Res::new_in(A { b: None }, assoc);
-    let b = Res::new_in(B { a: a.clone() }, assoc);
-
-    assoc.enter(move |x| {
-        let mut ax = a.own().via(x);
-        ax.b = Some(b.clone());
-        ax.subtract_and_call(10);
-    });
+    a.borrow_mut(&mut key).work_a(0);
 }

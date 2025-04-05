@@ -1,69 +1,27 @@
-#![feature(arbitrary_self_types)]
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use mutcy::*;
 
 fn criterion_benchmark(c: &mut Criterion) {
-    c.bench_function("enter-scope", |bench| {
-        let mut assoc = Own::new();
+    c.bench_function("count-1M-native", |bench| {
+        let mut x = 0;
         bench.iter(|| {
-            assoc.enter(black_box(|_: Mut<()>| {}));
+            x = 0;
+            for _ in 0..1_000_000 {
+                x += black_box(1);
+            }
         });
     });
 
-    c.bench_function("recursive-ping-pong", |bench| {
-        struct A {
-            b: Option<Res<B>>,
-        }
+    c.bench_function("count-1M-keycell", |bench| {
+        let mut key = Key::acquire();
 
-        impl A {
-            fn subtract_and_call(self: Mut<Self>, count: usize) {
-                self.b
-                    .as_ref()
-                    .unwrap()
-                    .own()
-                    .via(self)
-                    .subtract_and_call(count - 1);
-            }
-        }
-
-        struct B {
-            a: Res<A>,
-        }
-
-        impl B {
-            fn subtract_and_call(self: Mut<Self>, count: usize) {
-                if count > 1 {
-                    black_box(self.a.own())
-                        .via(self)
-                        .subtract_and_call(count - 1);
-                }
-            }
-        }
-
-        let mut assoc = Own::new();
-
-        assoc.enter(|key| {
-            let a = Res::new(A { b: None });
-            let b = Res::new(B { a: a.clone() });
-
-            a.own().via(key).b = Some(b.clone());
-            let mut ax = a.via(key);
-
-            bench.iter(|| {
-                ax.subtract_and_call(black_box(1000));
-            });
-
-            ax.b = None;
-        });
-    });
-
-    c.bench_function("callback", |bench| {
-        let own = &mut Own::new();
-        let item = Res::new_in(123, own);
-        let cb = Callback::new(&item, |this, arg| **this + arg);
+        let x = KeyCell::new(0usize, ());
 
         bench.iter(|| {
-            assert_eq!(Some(124), cb.call(black_box(own), black_box(1)));
+            *x.borrow_mut(&mut key) = 0;
+            for _ in 0..1_000_000 {
+                *x.borrow_mut(&mut key) += black_box(1);
+            }
         });
     });
 }
