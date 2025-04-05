@@ -14,6 +14,21 @@
 //! calls `A` (`B -> A`), there are no live references to `A`. When `B`
 //! returns, `A`'s borrow is reacquired.
 //!
+//! # Rationale
+//!
+//! Relinquishing borrows allows us to implement [Callback]s and related
+//! patterns in our code. Without this crate callbacks are cumbersome to use
+//! because we are constrained to [RefCell](std::cell::RefCell), which doesn't
+//! allow recursion.
+//!
+//! Another method is to enqueue work to some executor, but this
+//! presents us with a delayed operation and a reordering problem; suppose we
+//! have a queue containing work `[A, B]`, if `A` enqueues another operation, we
+//! now get `[B, A2]`. A direct function call would run `A2` before `B`. This
+//! reordering can give us non-intuitive results. Additionally, reordering is a
+//! property of the system as a whole, which removes our ability to perform
+//! *local reasoning*; changing code in one place can break it in another.
+//!
 //! # Note
 //!
 //! This crate currently requires *nightly* Rust.
@@ -210,12 +225,16 @@
 #![feature(arbitrary_self_types)]
 #![feature(coerce_unsized)]
 #![feature(unsize)]
+pub use crate::callback::Callback;
 use std::{
     cell::UnsafeCell,
+    convert::From,
     marker::{PhantomData, Unsize},
     ops::{CoerceUnsized, Deref, DerefMut},
     rc::{Rc, Weak},
 };
+
+mod callback;
 
 scoped_tls::scoped_thread_local!(static ASSOC: Rc<AssocInner>);
 
@@ -460,7 +479,7 @@ impl<T: ?Sized + 'static> Res<T> {
     ///     }
     /// }
     /// ```
-    pub fn via<'a: 'b, 'b, A: 'static>(self, source: &'a mut Own<A>) -> Own<'b, T> {
+    pub fn via<'a: 'b, 'b, A: ?Sized + 'static>(self, source: &'a mut Own<A>) -> Own<'b, T> {
         assert!(
             Rc::ptr_eq(&self.0.assoc, &source.data.0.assoc),
             "assoc is not identical"
@@ -468,6 +487,18 @@ impl<T: ?Sized + 'static> Res<T> {
 
         Own {
             assoc: source.assoc,
+            data: self,
+        }
+    }
+
+    fn via_untyped<'a: 'b, 'b>(self, source: &'a mut UntypedOwn) -> Own<'b, T> {
+        assert!(
+            Rc::ptr_eq(&self.0.assoc, source.0),
+            "assoc is not identical"
+        );
+
+        Own {
+            assoc: PhantomData,
             data: self,
         }
     }
@@ -551,6 +582,24 @@ impl<T> Default for WeakRes<T> {
     }
 }
 
+impl<T: ?Sized + 'static> From<&Res<T>> for WeakRes<T> {
+    fn from(item: &Res<T>) -> WeakRes<T> {
+        Res::downgrade(item)
+    }
+}
+
+impl<T: ?Sized + 'static> From<Res<T>> for WeakRes<T> {
+    fn from(item: Res<T>) -> WeakRes<T> {
+        Res::downgrade(&item)
+    }
+}
+
+impl<T: ?Sized + 'static> From<&WeakRes<T>> for WeakRes<T> {
+    fn from(item: &WeakRes<T>) -> WeakRes<T> {
+        item.clone()
+    }
+}
+
 /// Mutable borrow guard providing access to associated data.
 ///
 /// Implements [`Deref`]/[`DerefMut`] for direct access to the underlying value.
@@ -607,6 +656,21 @@ impl Own<'static, ()> {
     }
 }
 
+impl<'a, T: ?Sized + 'static> Own<'a, T> {
+    /// Convert into an untyped version of `Own`.
+    ///
+    /// This is mainly useful for passing to generic functions that need to
+    /// [via_untyped](Res::via_untyped)
+    /// associated data.
+    ///
+    /// Crate-visible only because design is unfinished.
+    pub(crate) fn untyped(&mut self) -> UntypedOwn {
+        UntypedOwn(&self.data.0.assoc)
+    }
+}
+
+impl<'a, T: ?Sized + Unsize<U>, U: ?Sized> CoerceUnsized<Own<'a, U>> for Own<'a, T> {}
+
 impl Default for Own<'static, ()> {
     fn default() -> Self {
         Self::new()
@@ -639,3 +703,10 @@ impl<'a, T: ?Sized + 'static> DerefMut for Own<'a, T> {
         unsafe { self.data.as_mut() }
     }
 }
+
+/// A type-erased version of [Own].
+///
+/// Useful mainly for passing to generic functions that need to convert [Res]
+/// into [Own] without knowing a concrete type. Intended for storing function
+/// objects as `Fn(&mut UntypedOwn)`.
+pub(crate) struct UntypedOwn<'a>(&'a Rc<AssocInner>);

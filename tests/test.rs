@@ -1,5 +1,5 @@
 #![feature(arbitrary_self_types)]
-use mutcy::{Mut, Own, Res, WeakRes};
+use mutcy::{Callback, Mut, Own, Res, WeakRes};
 
 #[test]
 #[should_panic(expected = "assoc is not identical")]
@@ -73,4 +73,43 @@ fn unsize_array_weakres() {
 
     let array = weak.upgrade().unwrap();
     array.via(key)[1023] = 123;
+}
+
+#[test]
+fn callback_from_strong() {
+    let own = &mut Own::new();
+    let item = Res::new_in(123, own);
+
+    let cb = Callback::new(&item, |this, args| **this + args);
+
+    assert_eq!(cb.own().call(own, 1), Some(124));
+    drop(item);
+    assert_eq!(cb.own().call(own, 1), None);
+}
+
+#[test]
+fn callback_from_weak() {
+    let own = &mut Own::new();
+    let item = Res::new_in(123, own);
+
+    let weak = Res::downgrade(&item);
+
+    let cb = Callback::new(&weak, |this, args| **this + args);
+
+    assert_eq!(cb.own().call(own, 1), Some(124));
+    drop(item);
+    assert_eq!(cb.own().call(own, 1), None);
+}
+
+#[test]
+#[should_panic(expected = "assoc is not identical")]
+fn callback_different_assocs() {
+    let own1 = &mut Own::new();
+    let own2 = &mut Own::new();
+
+    let item = Res::new_in(123, own1);
+
+    let cb = Callback::new(&item, |_, _| {});
+
+    cb.call(own2, ());
 }

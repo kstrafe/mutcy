@@ -56,6 +56,16 @@ fn criterion_benchmark(c: &mut Criterion) {
             ax.b = None;
         });
     });
+
+    c.bench_function("callback", |bench| {
+        let own = &mut Own::new();
+        let item = Res::new_in(123, own);
+        let cb = Callback::new(&item, |this, arg| **this + arg);
+
+        bench.iter(|| {
+            assert_eq!(Some(124), cb.call(black_box(own), black_box(1)));
+        });
+    });
 }
 
 criterion_group!(benches, criterion_benchmark);
