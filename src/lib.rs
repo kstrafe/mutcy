@@ -172,7 +172,7 @@ impl Key {
     ///     *kc2_mut += 1;
     ///
     ///     // Relinquish the split.
-    ///     **kc1 += 1;
+    ///     **kc1 += 1; // kc1 = 2;
     ///
     ///     // Compile error.
     ///     // *kc2_mut += 1;
@@ -282,6 +282,27 @@ impl<T: Meta> KeyCell<T> {
     /// ```
     pub fn meta(&self) -> &T::Data {
         &self.1
+    }
+
+    /// Acquire mutable reference to metadata. See [Meta].
+    ///
+    /// # Examples #
+    ///
+    /// ```
+    /// use mutcy::{KeyCell, Meta};
+    /// struct A;
+    ///
+    /// impl Meta for A {
+    ///     type Data = i32;
+    /// }
+    ///
+    /// let mut kc = KeyCell::new(A, 123);
+    ///
+    /// *kc.meta_mut() = 100;
+    /// assert_eq!(*kc.meta(), 100);
+    /// ```
+    pub fn meta_mut(&mut self) -> &mut T::Data {
+        &mut self.1
     }
 }
 
