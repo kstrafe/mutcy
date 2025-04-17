@@ -7,4 +7,4 @@ Zero-cost mutable cyclic borrows using borrow relinquishing.
 [![MIT licensed][mit-badge]][mit-url]
 
 [mit-badge]: https://img.shields.io/badge/license-MIT-blue.svg
-[mit-url]: https://github.com/tokio-rs/tokio/blob/master/LICENSE
+[mit-url]: https://github.com/kstrafe/mutcy/blob/master/LICENSE
