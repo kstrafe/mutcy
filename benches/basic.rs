@@ -23,9 +23,9 @@ fn criterion_benchmark(c: &mut Criterion) {
             let x = KeyCell::new(0usize, ());
 
             bench.iter(|| {
-                *x.borrow_mut(&mut key) = 0;
+                *x.rw(&mut key) = 0;
                 for _ in 0..COUNT {
-                    *x.borrow_mut(&mut key) += black_box(1);
+                    *x.rw(&mut key) += black_box(1);
                 }
             });
         });
@@ -56,12 +56,12 @@ fn criterion_benchmark(c: &mut Criterion) {
         });
 
         group.bench_function("keycell", |bench| {
-            fn ping_pong(a: KeyMut<i32>, b: &KeyCell<i32>) {
+            fn ping_pong(a: Rw<i32>, b: &KeyCell<i32>) {
                 if **a > 0 {
                     **a -= black_box(1);
 
-                    let (_, key) = Key::split(a);
-                    *b.borrow_mut(key) += black_box(1);
+                    let (_, key) = Key::split_rw(a);
+                    *b.rw(key) += black_box(1);
 
                     ping_pong(a, b);
                 }
@@ -72,7 +72,7 @@ fn criterion_benchmark(c: &mut Criterion) {
             bench.iter(|| {
                 let a = KeyCell::new(1000, ());
                 let b = KeyCell::new(0, ());
-                ping_pong(&mut a.borrow_mut(&mut key), &b);
+                ping_pong(&mut a.rw(&mut key), &b);
             });
         });
 

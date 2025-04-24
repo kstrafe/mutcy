@@ -3,15 +3,20 @@ use std::{
     rc::{Rc, Weak},
 };
 
-/// Defines constant metadata to be stored alongside the primary item in a
+/// Defines metadata to be stored alongside the primary item in a
 /// [KeyCell](crate::KeyCell).
 ///
 /// # Purpose #
 ///
-/// Metadata is constant data associated with a particular `KeyCell`. Its
+/// Metadata is data associated with a particular `KeyCell`. Its
 /// primary purpose is to provide references to other `KeyCell`s. If these other
 /// `KeyCell`s were instead stored inside the original `KeyCell`, then any
 /// access to those would require us to clone them out before use.
+///
+/// The key constraint on metadata is that it is immutable so long as KeyCell
+/// is immutable (e.g. `Rc<KeyCell<_>>`), so it's not possible to mutate
+/// metadata. Interior mutability could be used (`RefCell`), but then panics may
+/// occur.
 ///
 /// # Examples #
 ///
@@ -20,7 +25,7 @@ use std::{
 /// and a `&mut Key`.
 ///
 /// ```
-/// use mutcy::{Key, KeyCell, KeyMut};
+/// use mutcy::{Key, KeyCell, Rw};
 /// use std::rc::Rc;
 ///
 /// struct A {
@@ -28,35 +33,33 @@ use std::{
 /// }
 /// # impl mutcy::Meta for A { type Data = (); }
 ///
-/// fn function(this: KeyMut<A>) {
+/// fn function(this: Rw<A>) {
 ///     // We require this clone...
 ///     let other = this.other.clone();
-///     // because we can no longer access `this`...
-///     let (_this, key) = Key::split(this);
+///     // because we can no longer access `this.other`...
+///     let (_this, key): (&KeyCell<_>, &mut Key) = Key::split_rw(this);
 ///     // to increment `other`.
-///     *other.borrow_mut(key) += 1;
+///     *other.rw(key) += 1;
 /// }
 /// ```
 ///
 /// Metadata solves the issue of requiring clones.
 ///
 /// ```
-/// use mutcy::{Key, KeyCell, KeyMut, Meta};
+/// use mutcy::{Key, KeyCell, Meta, Rw};
 /// use std::rc::Rc;
 ///
-/// struct A {
-///     // ...
-/// }
+/// struct A {}
 ///
 /// impl Meta for A {
 ///     type Data = Rc<KeyCell<i32>>;
 /// }
 ///
-/// fn function(this: KeyMut<A>) {
+/// fn function(this: Rw<A>) {
 ///     // We don't need to clone anything before splitting...
-///     let (input, key) = Key::split(this);
+///     let (input, key) = Key::split_rw(this);
 ///     // because we can now access the `KeyCell` metadata via `meta`.
-///     *input.meta().borrow_mut(key) += 1;
+///     *input.meta().rw(key) += 1;
 /// }
 /// ```
 pub trait Meta {

@@ -14,13 +14,13 @@ fn main() {
     }
 
     impl A {
-        fn work_a(self: KeyMut<Self>, value: i32) {
+        fn work_a(self: Rw<Self>, value: i32) {
             println!("A: {}", value);
 
             if value < 10 {
                 let b = self.b.upgrade().unwrap();
-                let (_, key) = Key::split(self);
-                b.borrow_mut(key).work_b(value + 1);
+                let (_, key) = Key::split_rw(self);
+                b.rw(key).work_b(value + 1);
             }
         }
     }
@@ -32,17 +32,17 @@ fn main() {
     }
 
     impl B {
-        fn work_b(self: KeyMut<Self>, value: i32) {
+        fn work_b(self: Rw<Self>, value: i32) {
             println!("B: {}", value);
 
-            let (this, key) = Key::split(self);
-            this.meta().borrow_mut(key).work_a(value + 1);
+            let (this, key) = Key::split_rw(self);
+            this.meta().rw(key).work_a(value + 1);
         }
     }
 
     let a = Rc::new(KeyCell::new(A { b: Weak::new() }, ()));
     let b = Rc::new(KeyCell::new(B {}, a.clone()));
-    a.borrow_mut(&mut key).b = Rc::downgrade(&b);
+    a.rw(&mut key).b = Rc::downgrade(&b);
 
-    a.borrow_mut(&mut key).work_a(0);
+    a.rw(&mut key).work_a(0);
 }

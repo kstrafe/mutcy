@@ -7,9 +7,15 @@
 //! mutably borrowed at a time using a [Key]. Simultaneous immutable borrows
 //! are permitted.
 //!
-//! [Key] is a ZST, and only a single instance can exist per thread. The only
+//! `Key` is a ZST, and only a single instance can exist per thread. The only
 //! dynamic check this library performs is upon calling [Key::acquire] to ensure
-//! that there exists no other instance.
+//! that there exists no other instance in the same thread. This ensures that we
+//! can only mutably borrow one `KeyCell` per thread.
+//!
+//! Once we have a mutable borrow of a `KeyCell` we can relinquish this borrow
+//! temporarily using [Key::split_rw] to get
+//! `&mut Key`, and borrow other `KeyCell`s. This is what allows us to implement
+//! recursive calls with mutable access.
 //!
 //! # Comparison to `RefCell` #
 //!
@@ -19,42 +25,53 @@
 //!
 //! 1. Borrowing is zero-cost.
 //! 2. Borrowing will never fail or panic.
-//! 3. Only a single [KeyCell] can be mutably borrowed per thread.
+//! 3. Only a single `KeyCell` can be mutably borrowed per thread.
+//!
+//! # Alternatives #
+//!
+//! The core idea in this crate relies on acquiring mutable borrows through a
+//! unique object (the [Key]). The same idea is implemented in a few other
+//! crates.
+//!
+//! - [ghost-cell](https://crates.io/crates/ghost-cell)
+//! - [qcell](https://crates.io/crates/qcell)
+//! - [token-cell](https://crates.io/crates/token-cell)
+//! - [frankencell](https://crates.io/crates/frankencell)
 //!
 //! # Examples #
 //!
-//! This crate uses [borrow](KeyCell::borrow) and
-//! [borrow_mut](KeyCell::borrow_mut) to access data.
+//! This crate uses [ro](KeyCell::ro) and
+//! [rw](KeyCell::rw) instead of `borrow` and `borrow_mut` to access data.
 //!
 //! ```
-//! use mutcy::{Key, KeyCell, KeyMut};
+//! use mutcy::{Key, KeyCell, Rw};
 //!
 //! let mut key = Key::acquire();
 //!
 //! let kc1 = KeyCell::new(0i32, ());
 //! let kc2 = KeyCell::new(String::new(), ());
 //!
-//! *kc2.borrow_mut(&mut key) += "Hello";
-//! *kc1.borrow_mut(&mut key) += 1;
-//! *kc2.borrow_mut(&mut key) += "World";
+//! *kc2.rw(&mut key) += "Hello";
+//! *kc1.rw(&mut key) += 1;
+//! *kc2.rw(&mut key) += "World";
 //!
-//! let item1 = kc1.borrow(&key);
-//! let item2 = kc1.borrow(&key);
+//! let item1 = kc1.ro(&key);
+//! let item2 = kc1.ro(&key);
 //!
 //! println!("{} - {}", *item1, *item2);
 //! ```
 //!
-//! With this library it's possible to define methods that take [KeyMut] and
+//! With this library it's possible to define methods that take [Rw] and
 //! transfer mutability to other [KeyCell]s when needed. The compile-time borrow
 //! checker ensures that no mutable aliasing occurs.
 //!
 //! In the following example we show how a struct can accept a `self:
-//! KeyMut<Self>` and relinquish its own borrows to access some other
+//! Rw<Self>` and relinquish its own borrows to access some other
 //! `KeyCell`.
 //!
 //! ```
 //! #![feature(arbitrary_self_types)]
-//! use mutcy::{Key, KeyCell, KeyMut, Meta};
+//! use mutcy::{Key, KeyCell, Meta, Rw};
 //! use std::rc::Rc;
 //!
 //! struct MyStruct {
@@ -62,14 +79,14 @@
 //! }
 //!
 //! impl MyStruct {
-//!     fn my_function(self: KeyMut<Self>) {
+//!     fn my_function(self: Rw<Self>) {
 //!         self.value += 1;
 //!
 //!         // This relinquishes any borrows to `self`.
-//!         let (this, key) = Key::split(self);
+//!         let (this, key) = Key::split_rw(self);
 //!
 //!         // We can now access any other KeyCell using `key`.
-//!         let mut string = this.meta().other.borrow_mut(key);
+//!         let mut string = this.meta().other.rw(key);
 //!         *string += "Hello world";
 //!
 //!         self.value += 1;
@@ -95,13 +112,22 @@
 //!     },
 //! );
 //!
-//! my_struct.borrow_mut(&mut key).my_function();
+//! my_struct.rw(&mut key).my_function();
 //!
-//! println!("{}", *other.borrow(&key));
-//! println!("{}", my_struct.borrow(&key).value);
+//! println!("{}", *other.ro(&key));
+//! println!("{}", my_struct.ro(&key).value);
 //! ```
 //!
-//! For more information on metadata see [Meta].
+//! # Metadata #
+//!
+//! [KeyCell::new] takes two arguments, the primary data to wrap, and metadata.
+//! Metadata can always be accessed immutably as it does not require a [Key].
+//!
+//! This allows us to reference and access other [KeyCell]s without having to
+//! clone an `Rc<KeyCell<_>>` out of the initial item.
+//!
+//! For more details see [Meta].
+#![feature(arbitrary_self_types)]
 pub use self::meta::Meta;
 use std::{
     cell::{Cell, UnsafeCell},
@@ -115,11 +141,55 @@ thread_local! {
     static KEY: Cell<bool> = const { Cell::new(true) }
 }
 
-/// Reference to [KeyCellRef].
-pub type KeyRef<'a, T> = &'a KeyCellRef<'a, T>;
+/// Immutable reference to [RoGuard].
+///
+/// Convenience wrapper that allows the creation of methods that take `Ro`
+/// without specifying lifetimes.
+///
+/// # Examples #
+///
+/// ```
+/// #![feature(arbitrary_self_types)]
+/// use mutcy::{Meta, Ro};
+///
+/// struct X;
+///
+/// impl Meta for X {
+///     type Data = ();
+/// }
+///
+/// impl X {
+///     fn my_function(self: Ro<Self>) {
+///         // ...
+///     }
+/// }
+/// ```
+pub type Ro<'a, 'b, T> = &'a RoGuard<'b, T>;
 
-/// Mutable reference to [KeyCellMut].
-pub type KeyMut<'a, T> = &'a mut KeyCellMut<'a, T>;
+/// Mutable reference to [RwGuard].
+///
+/// Convenience wrapper that allows the creation of methods that take `Rw`
+/// without specifying lifetimes.
+///
+/// # Examples #
+///
+/// ```
+/// #![feature(arbitrary_self_types)]
+/// use mutcy::{Meta, Rw};
+///
+/// struct X;
+///
+/// impl Meta for X {
+///     type Data = ();
+/// }
+///
+/// impl X {
+///     fn my_function(self: Rw<Self>) {
+///         // ...
+///     }
+/// }
+/// ```
+pub type Rw<'a, 'b, T> = &'a mut RwGuard<'b, T>;
 
 /// A per-thread unique key used to access data inside [KeyCell]s.
 ///
@@ -152,23 +222,53 @@ impl Key {
         Key(PhantomData)
     }
 
-    /// Split a [KeyMut] into its consitutuent [KeyCell] and [Key].
+    /// Split an [Ro] into its consitutuent [KeyCell] and immutable [Key].
     ///
-    /// Whenever we want to borrow another item while already holding a `KeyMut`
+    /// Similar to [split_rw](Key::split_rw). Unlike `split_rw`, the `Ro`
+    /// remains accessible because multiple simultaneous immutable borrows
+    /// are allowed.
+    ///
+    /// # Examples #
+    ///
+    /// ```
+    /// use mutcy::{Key, KeyCell, Ro};
+    ///
+    /// fn function(kc1: Ro<i32>, kc2: &KeyCell<i32>) {
+    ///     let (_, key) = Key::split_ro(kc1);
+    ///     println!("{}", **kc1);
+    ///     println!("{}", *kc2.ro(key));
+    /// }
+    ///
+    /// let kc1 = KeyCell::new(0, ());
+    /// let kc2 = KeyCell::new(10, ());
+    ///
+    /// let mut key = Key::acquire();
+    ///
+    /// let mut kc1_borrow = kc1.ro(&mut key);
+    ///
+    /// function(&kc1_borrow, &kc2);
+    /// ```
+    pub fn split_ro<'a: 'b, 'b, T: Meta>(item: &'b RoGuard<'a, T>) -> (&'b KeyCell<T>, &'b Key) {
+        RoGuard::split(item)
+    }
+
+    /// Split an [Rw] into its consitutuent [KeyCell] and mutable [Key].
+    ///
+    /// Whenever we want to borrow another item while already holding a `Rw`
     /// we need to unborrow. This function unborrows, granting you access to
     /// the key that was used to borrow the initial `KeyCell`.
     ///
     /// # Examples #
     ///
     /// ```
-    /// use mutcy::{Key, KeyCell, KeyMut};
+    /// use mutcy::{Key, KeyCell, Rw};
     ///
-    /// fn function(kc1: KeyMut<i32>, kc2: &KeyCell<i32>) {
+    /// fn function(kc1: Rw<i32>, kc2: &KeyCell<i32>) {
     ///     **kc1 += 1; // kc1 = 1
     ///
-    ///     let (kc1_ref, key) = Key::split(kc1);
+    ///     let (kc1_ref, key) = Key::split_rw(kc1);
     ///
-    ///     let mut kc2_mut = kc2.borrow_mut(key);
+    ///     let mut kc2_mut = kc2.rw(key);
     ///     *kc2_mut += 1;
     ///
     ///     // Relinquish the split.
@@ -183,14 +283,14 @@ impl Key {
     ///
     /// let mut key = Key::acquire();
     ///
-    /// let mut kc1_borrow = kc1.borrow_mut(&mut key);
+    /// let mut kc1_borrow = kc1.rw(&mut key);
     ///
     /// function(&mut kc1_borrow, &kc2);
     /// ```
-    pub fn split<'a: 'b, 'b, T: Meta>(
-        item: &'b mut KeyCellMut<'a, T>,
+    pub fn split_rw<'a: 'b, 'b, T: Meta>(
+        item: &'b mut RwGuard<'a, T>,
     ) -> (&'b KeyCell<T>, &'b mut Key) {
-        KeyCellMut::split(item)
+        RwGuard::split(item)
     }
 }
 
@@ -219,11 +319,13 @@ impl<T: Meta> KeyCell<T> {
     ///
     /// let kc = KeyCell::new(123, ());
     /// ```
-    pub fn new(item: T, attached: T::Data) -> Self {
-        Self(UnsafeCell::new(item), attached)
+    pub fn new(item: T, meta: T::Data) -> Self {
+        Self(UnsafeCell::new(item), meta)
     }
 
     /// Immutably borrows the wrapped value.
+    ///
+    /// Requires a `&Key` to ensure no mutable borrow exists.
     ///
     /// # Examples #
     ///
@@ -233,11 +335,11 @@ impl<T: Meta> KeyCell<T> {
     /// let key = Key::acquire();
     /// let kc = KeyCell::new(123, ());
     ///
-    /// let borrowed1 = kc.borrow(&key);
-    /// let borrowed2 = kc.borrow(&key);
+    /// let borrowed1 = kc.ro(&key);
+    /// let borrowed2 = kc.ro(&key);
     /// ```
-    pub fn borrow<'a>(&'a self, _key: &'a Key) -> KeyCellRef<'a, T> {
-        KeyCellRef(self)
+    pub fn ro<'a>(&'a self, key: &'a Key) -> RoGuard<'a, T> {
+        RoGuard(self, key)
     }
 
     /// Mutably borrows the wrapped value.
@@ -253,15 +355,15 @@ impl<T: Meta> KeyCell<T> {
     /// let mut key = Key::acquire();
     /// let kc = KeyCell::new(123, ());
     ///
-    /// let borrowed1 = kc.borrow_mut(&mut key);
+    /// let borrowed1 = kc.rw(&mut key);
     ///
-    /// let borrowed2 = kc.borrow(&key);
+    /// let borrowed2 = kc.ro(&key);
     ///
     /// // This does not compile.
     /// // let _ = *borrowed1;
     /// ```
-    pub fn borrow_mut<'a>(&'a self, key: &'a mut Key) -> KeyCellMut<'a, T> {
-        KeyCellMut(self, key)
+    pub fn rw<'a>(&'a self, key: &'a mut Key) -> RwGuard<'a, T> {
+        RwGuard(self, key)
     }
 
     /// Acquire metadata. See [Meta].
@@ -308,10 +410,16 @@ impl<T: Meta> KeyCell<T> {
 
 /// Wraps an immutably borrowed reference to a value in a `KeyCell`.
 ///
-/// See [KeyCell::borrow].
-pub struct KeyCellRef<'a, T: Meta>(&'a KeyCell<T>);
+/// See [KeyCell::ro].
+pub struct RoGuard<'a, T: Meta>(&'a KeyCell<T>, &'a Key);
 
-impl<'a, T: Meta> Deref for KeyCellRef<'a, T> {
+impl<'a, T: Meta> RoGuard<'a, T> {
+    fn split(this: &Self) -> (&KeyCell<T>, &Key) {
+        (this.0, this.1)
+    }
+}
+
+impl<'a, T: Meta> Deref for RoGuard<'a, T> {
     type Target = T;
     fn deref(&self) -> &Self::Target {
         unsafe { &*self.0.0.get() }
@@ -320,23 +428,23 @@ impl<'a, T: Meta> Deref for KeyCellRef<'a, T> {
 
 /// Wraps a mutably borrowed reference to a value in a `KeyCell`.
 ///
-/// See [KeyCell::borrow_mut].
-pub struct KeyCellMut<'a, T: Meta>(&'a KeyCell<T>, &'a mut Key);
+/// See [KeyCell::rw].
+pub struct RwGuard<'a, T: Meta>(&'a KeyCell<T>, &'a mut Key);
 
-impl<'a, T: Meta> KeyCellMut<'a, T> {
+impl<'a, T: Meta> RwGuard<'a, T> {
     fn split(this: &mut Self) -> (&KeyCell<T>, &mut Key) {
         (this.0, this.1)
     }
 }
 
-impl<'a, T: Meta> Deref for KeyCellMut<'a, T> {
+impl<'a, T: Meta> Deref for RwGuard<'a, T> {
     type Target = T;
     fn deref(&self) -> &Self::Target {
         unsafe { &*self.0.0.get() }
     }
 }
 
-impl<'a, T: Meta> DerefMut for KeyCellMut<'a, T> {
+impl<'a, T: Meta> DerefMut for RwGuard<'a, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         unsafe { &mut *self.0.0.get() }
     }
