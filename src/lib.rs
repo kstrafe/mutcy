@@ -136,6 +136,7 @@ use std::{
 };
 
 mod meta;
+pub mod signal;
 
 thread_local! {
     static KEY: Cell<bool> = const { Cell::new(true) }
