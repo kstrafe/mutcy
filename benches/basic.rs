@@ -1,5 +1,6 @@
 use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
 use mutcy::*;
+use std::rc::Rc;
 
 fn criterion_benchmark(c: &mut Criterion) {
     {
@@ -73,6 +74,45 @@ fn criterion_benchmark(c: &mut Criterion) {
                 let a = KeyCell::new(1000, ());
                 let b = KeyCell::new(0, ());
                 ping_pong(&mut a.rw(&mut key), &b);
+            });
+        });
+
+        group.finish();
+    }
+
+    {
+        let mut group = c.benchmark_group("signal");
+        const COUNT: u64 = 1000;
+        group.throughput(Throughput::Elements(COUNT));
+
+        group.bench_function("empty", |bench| {
+            let mut key = Key::acquire();
+            let signal = signal::Signal::new();
+            bench.iter(|| {
+                for _ in 0..COUNT {
+                    signal.emit(&mut key, ());
+                }
+            });
+        });
+
+        group.bench_function("receivers", |bench| {
+            let mut key = Key::acquire();
+            let signal = signal::Signal::new();
+
+            let mut receivers = Vec::new();
+
+            for idx in 0..COUNT {
+                let receiver = Rc::new(KeyCell::new(idx, ()));
+
+                signal.connect(&mut key, &receiver, format!("{}", idx), |this, _: &()| {
+                    **this += black_box(1);
+                });
+
+                receivers.push(receiver);
+            }
+
+            bench.iter(|| {
+                black_box(&signal).emit(&mut key, ());
             });
         });
 
