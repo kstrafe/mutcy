@@ -1,4 +1,4 @@
-use super::{Key, KeyCell, Meta, Rw};
+use super::{IntoWeak, Key, KeyCell, Meta, Rw};
 use std::{
     any::Any,
     borrow::Cow,
@@ -9,22 +9,6 @@ use std::{
 mod tests;
 
 type Handler<T> = dyn Fn(&mut Key, &T) -> bool;
-
-pub trait IntoWeak<T: Meta> {
-    fn into(&self) -> Weak<KeyCell<T>>;
-}
-
-impl<T: Meta> IntoWeak<T> for Rc<KeyCell<T>> {
-    fn into(&self) -> Weak<KeyCell<T>> {
-        Rc::downgrade(self)
-    }
-}
-
-impl<T: Meta> IntoWeak<T> for Weak<KeyCell<T>> {
-    fn into(&self) -> Weak<KeyCell<T>> {
-        self.clone()
-    }
-}
 
 struct Receiver<T> {
     handler: Rc<Handler<T>>,

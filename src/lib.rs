@@ -133,8 +133,10 @@ use std::{
     cell::{Cell, UnsafeCell},
     marker::PhantomData,
     ops::{Deref, DerefMut},
+    rc::{Rc, Weak},
 };
 
+pub mod callback;
 mod meta;
 pub mod signal;
 
@@ -448,5 +450,21 @@ impl<'a, T: Meta> Deref for RwGuard<'a, T> {
 impl<'a, T: Meta> DerefMut for RwGuard<'a, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         unsafe { &mut *self.0.0.get() }
+    }
+}
+
+pub trait IntoWeak<T: Meta> {
+    fn into(&self) -> Weak<KeyCell<T>>;
+}
+
+impl<T: Meta> IntoWeak<T> for Rc<KeyCell<T>> {
+    fn into(&self) -> Weak<KeyCell<T>> {
+        Rc::downgrade(self)
+    }
+}
+
+impl<T: Meta> IntoWeak<T> for Weak<KeyCell<T>> {
+    fn into(&self) -> Weak<KeyCell<T>> {
+        self.clone()
     }
 }

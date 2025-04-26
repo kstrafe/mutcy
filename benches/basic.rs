@@ -118,6 +118,24 @@ fn criterion_benchmark(c: &mut Criterion) {
 
         group.finish();
     }
+
+    {
+        let mut group = c.benchmark_group("callback");
+        const COUNT: u64 = 1000;
+        group.throughput(Throughput::Elements(COUNT));
+
+        group.bench_function("empty", |bench| {
+            let mut key = Key::acquire();
+            let receiver = Rc::new(KeyCell::new(0, ()));
+            let callback = callback::Callback::new(&receiver, |_, _: ()| {});
+
+            bench.iter(|| {
+                for _ in 0..COUNT {
+                    callback.call(&mut key, ());
+                }
+            });
+        });
+    }
 }
 
 criterion_group!(benches, criterion_benchmark);
