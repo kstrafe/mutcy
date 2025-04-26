@@ -82,9 +82,15 @@ impl<T> Signal<T> {
     /// cycle. If the `Signal` is instead held inside `receiver`, no
     /// reference cycle will be possible.
     ///
+    /// Also note that this function requires the receiver to have a strong
+    /// reference. This is to prevent cases such as [Rc::new_cyclic]
+    /// connecting a weak followed by an [emit](Signal::emit) causing the
+    /// not-yet constructed `Rc` from being removed.
+    ///
     /// # Panics #
     ///
-    /// Panics if `name` already exists.
+    /// Panics if `name` already exists or there are no strong references to the
+    /// receiver.
     ///
     /// # Examples #
     ///
@@ -175,6 +181,11 @@ impl<T> SignalInternal<T> {
         let name = name.into();
         let receiver = receiver.into();
         let target: Weak<_> = receiver.clone();
+
+        assert!(
+            Weak::strong_count(&target) > 0,
+            "Signal::connect: object must have a strong reference"
+        );
 
         let handler: Rc<Handler<T>> = Rc::new(move |key, item| {
             if let Some(receiver) = receiver.upgrade() {

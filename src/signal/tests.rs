@@ -181,18 +181,13 @@ fn connect_during_emit_after_index() {
 }
 
 #[test]
-fn cyclic_weak() {
+#[should_panic(expected = "Signal::connect: object must have a strong reference")]
+fn weak_without_strong_panics() {
     let key = &mut Key::acquire();
     let signal = Signal::new();
 
-    let item = Rc::new_cyclic(|weak| {
-        signal.connect(key, weak, "", |this, event| {
-            **this += *event;
-        });
+    Rc::new_cyclic(|weak| {
+        signal.connect(key, weak, "", |_, _: &()| {});
         KeyCell::new(0, ())
     });
-
-    assert_eq!(0, *item.ro(key));
-    signal.emit(key, 123);
-    assert_eq!(123, *item.ro(key));
 }
