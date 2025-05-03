@@ -87,7 +87,7 @@ fn criterion_benchmark(c: &mut Criterion) {
 
         group.bench_function("empty", |bench| {
             let mut key = Key::acquire();
-            let signal = signal::Signal::new();
+            let signal = Signal::new();
             bench.iter(|| {
                 for _ in 0..COUNT {
                     signal.emit(&mut key, ());
@@ -97,7 +97,7 @@ fn criterion_benchmark(c: &mut Criterion) {
 
         group.bench_function("receivers", |bench| {
             let mut key = Key::acquire();
-            let signal = signal::Signal::new();
+            let signal = Signal::new();
 
             let mut receivers = Vec::new();
 
@@ -127,7 +127,7 @@ fn criterion_benchmark(c: &mut Criterion) {
         group.bench_function("empty", |bench| {
             let mut key = Key::acquire();
             let receiver = Rc::new(KeyCell::new(0, ()));
-            let callback = callback::Callback::new(&receiver, |_, _: ()| {});
+            let callback = Callback::new(&receiver, |_, _: ()| {});
 
             bench.iter(|| {
                 for _ in 0..COUNT {
