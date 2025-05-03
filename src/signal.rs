@@ -21,7 +21,7 @@ struct Receiver<T> {
 /// # Examples #
 ///
 /// ```
-/// use mutcy::{Key, KeyCell, signal::Signal};
+/// use mutcy::{Key, KeyCell, Signal};
 /// use std::rc::Rc;
 ///
 /// let key = &mut Key::acquire();
@@ -79,7 +79,7 @@ impl<T> Signal<T> {
     /// # Examples #
     ///
     /// ```
-    /// use mutcy::{Key, KeyCell, Rw, signal::Signal};
+    /// use mutcy::{Key, KeyCell, Rw, Signal};
     /// use std::rc::Rc;
     ///
     /// let key = &mut Key::acquire();

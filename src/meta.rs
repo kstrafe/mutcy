@@ -63,6 +63,8 @@ use std::{
 /// }
 /// ```
 pub trait Meta {
+    /// The data to be associated with this a [KeyCell](crate::KeyCell) of this
+    /// type.
     type Data;
 }
 

@@ -128,7 +128,14 @@
 //!
 //! For more details see [Meta].
 #![feature(arbitrary_self_types)]
-pub use self::meta::Meta;
+#![deny(
+    missing_docs,
+    rustdoc::broken_intra_doc_links,
+    unused_imports,
+    unused_qualifications
+)]
+
+pub use self::{callback::Callback, meta::Meta, signal::Signal};
 use std::{
     cell::{Cell, UnsafeCell},
     marker::PhantomData,
@@ -136,9 +143,9 @@ use std::{
     rc::{Rc, Weak},
 };
 
-pub mod callback;
+mod callback;
 mod meta;
-pub mod signal;
+mod signal;
 
 thread_local! {
     static KEY: Cell<bool> = const { Cell::new(true) }
@@ -453,7 +460,11 @@ impl<'a, T: Meta> DerefMut for RwGuard<'a, T> {
     }
 }
 
+/// Converts [Rc](std::rc::Rc) or [Weak](std::rc::Weak) into a `Weak`.
+///
+/// Used to make the API take either an `Rc` or a `Weak`.
 pub trait IntoWeak<T: Meta> {
+    /// Perform the conversion.
     fn into(&self) -> Weak<KeyCell<T>>;
 }
 
