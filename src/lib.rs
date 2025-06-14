@@ -135,7 +135,11 @@
     unused_qualifications
 )]
 
-pub use self::{callback::Callback, meta::Meta, signal::Signal};
+pub use self::{
+    callback::Callback,
+    meta::Meta,
+    signal::{Connection, Signal},
+};
 use std::{
     cell::{Cell, UnsafeCell},
     marker::PhantomData,
@@ -460,7 +464,7 @@ impl<'a, T: Meta> DerefMut for RwGuard<'a, T> {
     }
 }
 
-/// Converts [Rc](std::rc::Rc) or [Weak](std::rc::Weak) into a `Weak`.
+/// Converts [Rc] or [Weak] into a `Weak`.
 ///
 /// Used to make the API take either an `Rc` or a `Weak`.
 pub trait IntoWeak<T: Meta> {

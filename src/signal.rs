@@ -1,10 +1,8 @@
+use self::fractional_index::{FractionalIndex, FractionalIndexType};
 use super::{IntoWeak, Key, KeyCell, Meta, Rw};
-use std::{
-    any::Any,
-    borrow::Cow,
-    rc::{Rc, Weak},
-};
+use std::rc::{Rc, Weak};
 
+mod fractional_index;
 #[cfg(test)]
 mod tests;
 
@@ -12,8 +10,31 @@ type Handler<T> = dyn Fn(&mut Key, &T) -> bool;
 
 struct Receiver<T> {
     handler: Rc<Handler<T>>,
-    name: Cow<'static, str>,
-    target: Weak<dyn Any>,
+    relative_index: FractionalIndexType,
+    id: u64,
+}
+
+trait Disconnectable {
+    fn disconnect(&self, key: &mut Key, id: u64);
+}
+
+impl<T> Disconnectable for KeyCell<SignalInner<T>> {
+    fn disconnect(&self, key: &mut Key, id: u64) {
+        self.rw(key).disconnect(id);
+    }
+}
+
+/// References a connection created via [Signal::connect].
+pub struct Connection {
+    inner: Rc<dyn Disconnectable>,
+    id: u64,
+}
+
+impl Connection {
+    /// Disconnect this connection.
+    pub fn disconnect(self, key: &mut Key) {
+        self.inner.disconnect(key, self.id);
+    }
 }
 
 /// Holds weak references to [KeyCell]s on which callbacks can be run.
@@ -29,7 +50,7 @@ struct Receiver<T> {
 /// let signal = Signal::new();
 /// let item = Rc::new(KeyCell::new(1, ()));
 ///
-/// signal.connect(key, &item, "a", |this, event| {
+/// signal.connect(key, &item, |this, event| {
 ///     **this *= event;
 /// });
 ///
@@ -44,18 +65,44 @@ struct Receiver<T> {
 /// signal.emit(key, 3);
 /// assert_eq!(12, *item.ro(key));
 /// ```
-pub struct Signal<T>(Rc<KeyCell<SignalInternal<T>>>);
+///
+/// # Connection Ordering #
+///
+/// [connect](Signal::connect)ions are invoked upon a call to
+/// [emit](Signal::emit). The order of these invocations corresponds
+/// to the order in which [connect](Signal::connect) was called.
+///
+/// Using [before](Signal::before) or [after](Signal::after) allows different
+/// ordering using fractional indexing.
+///
+/// ```
+/// use mutcy::{Key, KeyCell, Rw, Signal};
+/// use std::rc::Rc;
+///
+/// let key = &mut Key::acquire();
+///
+/// let signal = Signal::new();
+/// let item = Rc::new(KeyCell::new(0, ()));
+///
+/// signal.before().unwrap().connect(key, &item, |this, event| {
+///     **this *= event;
+/// });
+/// ```
+pub struct Signal<T> {
+    inner: Rc<KeyCell<SignalInner<T>>>,
+    index: FractionalIndex,
+}
 
-impl<T> Signal<T> {
+impl<T: 'static> Signal<T> {
     /// Creates a new `Signal`.
     pub fn new() -> Self {
-        Signal(Rc::new(KeyCell::new(SignalInternal::new(), ())))
+        Signal {
+            inner: Rc::new(KeyCell::new(SignalInner::new(), ())),
+            index: FractionalIndex::new(),
+        }
     }
 
     /// Connects a receiver to this signal.
-    ///
-    /// Each receiver has a unique identifier: `name`. Handlers are invoked
-    /// according to lexicographic order; "a" runs before "b".
     ///
     /// Handlers are removed automatically if the receiver has no strong
     /// references left.
@@ -71,10 +118,11 @@ impl<T> Signal<T> {
     /// connecting a weak followed by an [emit](Signal::emit) causing the
     /// not-yet constructed `Rc` from being removed.
     ///
-    /// # Panics #
+    /// # Ordering #
     ///
-    /// Panics if `name` already exists or there are no strong references to the
-    /// receiver.
+    /// Handlers are invoked in the same order in which they were `connect`ed.
+    /// To specify a different ordering, see [Signal::before] and
+    /// [Signal::after].
     ///
     /// # Examples #
     ///
@@ -87,18 +135,115 @@ impl<T> Signal<T> {
     /// let signal = Signal::new();
     /// let item = Rc::new(KeyCell::new(1, ()));
     ///
-    /// signal.connect(key, &item, "a", |this, event| {
+    /// signal.connect(key, &item, |this, event| {
     ///     **this *= event;
     /// });
     /// ```
-    pub fn connect<R, I, C, F>(&self, key: &mut Key, receiver: &I, name: C, handler: F)
+    pub fn connect<R, I, F>(&self, key: &mut Key, receiver: &I, handler: F) -> Connection
     where
         R: Meta + 'static,
         I: IntoWeak<R>,
-        C: Into<Cow<'static, str>>,
         F: Fn(Rw<R>, &T) + 'static,
     {
-        self.0.rw(key).connect(receiver, name, handler);
+        let id = self
+            .inner
+            .rw(key)
+            .connect(receiver, self.index.value(), handler);
+
+        Connection {
+            inner: self.inner.clone(),
+            id,
+        }
+    }
+
+    /// Creates a [Signal] to which connections will be invoked before the
+    /// current signal.
+    ///
+    /// Normally, connections are invoked by the order in which their respective
+    /// [connect](Signal::connect)s
+    /// were called.
+    ///
+    /// # Examples #
+    ///
+    /// ```
+    /// use mutcy::{Key, KeyCell, Rw, Signal};
+    /// use std::{cell::RefCell, rc::Rc};
+    ///
+    /// let key = &mut Key::acquire();
+    ///
+    /// let signal = Signal::new();
+    /// let shared = Rc::new(RefCell::new(Vec::new()));
+    ///
+    /// let item = Rc::new(KeyCell::new(1, ()));
+    ///
+    /// let shared_clone = shared.clone();
+    /// signal.connect(key, &item, move |this, event| {
+    ///     shared_clone.borrow_mut().push(1);
+    ///     println!("This runs after");
+    /// });
+    ///
+    /// let shared_clone = shared.clone();
+    /// signal
+    ///     .before()
+    ///     .unwrap()
+    ///     .connect(key, &item, move |this, event| {
+    ///         shared_clone.borrow_mut().push(0);
+    ///         println!("This runs before");
+    ///     });
+    ///
+    /// signal.emit(key, ());
+    /// assert_eq!(&*shared.borrow(), &[0, 1]);
+    /// ```
+    pub fn before(&self) -> Option<Self> {
+        self.index.left().map(|index| Self {
+            inner: self.inner.clone(),
+            index,
+        })
+    }
+
+    /// Creates a [Signal] to which connections will be invoked after the
+    /// current signal.
+    ///
+    /// Normally, connections are invoked by the order in which their respective
+    /// [connect](Signal::connect)s
+    /// were called.
+    ///
+    /// # Examples #
+    ///
+    /// ```
+    /// use mutcy::{Key, KeyCell, Rw, Signal};
+    /// use std::{cell::RefCell, rc::Rc};
+    ///
+    /// let key = &mut Key::acquire();
+    ///
+    /// let signal = Signal::new();
+    /// let shared = Rc::new(RefCell::new(Vec::new()));
+    ///
+    /// let item = Rc::new(KeyCell::new(1, ()));
+    ///
+    /// let shared_clone = shared.clone();
+    /// signal
+    ///     .after()
+    ///     .unwrap()
+    ///     .connect(key, &item, move |this, event| {
+    ///         shared_clone.borrow_mut().push(1);
+    ///         println!("This runs after");
+    ///     });
+    ///
+    /// let shared_clone = shared.clone();
+    /// signal.connect(key, &item, move |this, event| {
+    ///     shared_clone.borrow_mut().push(0);
+    ///     println!("This runs before");
+    /// });
+    ///
+    /// signal.emit(key, ());
+    /// assert_eq!(&*shared.borrow(), &[0, 1]);
+    /// ```
+    pub fn after(&self) -> Option<Self> {
+        self.index.right().map(|index| Self {
+            inner: self.inner.clone(),
+            index,
+        })
     }
 
     /// Emits a value to all receivers.
@@ -112,57 +257,55 @@ impl<T> Signal<T> {
     ///
     /// This allows us to add a receiver that modifies the data and re-emits.
     pub fn emit(&self, key: &mut Key, item: T) {
-        self.0.rw(key).emit(item);
-    }
-
-    /// Disconnects a handler.
-    ///
-    /// If `order` does not exist in this signal, then no operation happens.
-    pub fn disconnect<C>(&self, key: &mut Key, order: C)
-    where
-        C: Into<Cow<'static, str>>,
-    {
-        self.0.rw(key).disconnect(order);
+        self.inner.rw(key).emit(item);
     }
 }
 
 impl<T> Clone for Signal<T> {
     fn clone(&self) -> Self {
-        Self(self.0.clone())
+        Self {
+            inner: self.inner.clone(),
+            index: self.index,
+        }
     }
 }
 
-impl<T> Default for Signal<T> {
+impl<T: 'static> Default for Signal<T> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-struct SignalInternal<T> {
+struct SignalInner<T> {
     receivers: Vec<Receiver<T>>,
     index: usize,
     depth: usize,
     top: usize,
+    idgen: u64,
 }
 
-impl<T> SignalInternal<T> {
+impl<T> SignalInner<T> {
     pub fn new() -> Self {
         Self {
             receivers: Vec::new(),
             index: 0,
             depth: 0,
             top: 0,
+            idgen: 0,
         }
     }
 
-    pub fn connect<R, I, C, F>(self: Rw<Self>, receiver: &I, name: C, handler: F)
+    pub fn connect<R, I, F>(
+        self: Rw<Self>,
+        receiver: &I,
+        order: FractionalIndexType,
+        handler: F,
+    ) -> u64
     where
         R: Meta + 'static,
         I: IntoWeak<R>,
-        C: Into<Cow<'static, str>>,
         F: Fn(Rw<R>, &T) + 'static,
     {
-        let name = name.into();
         let receiver = receiver.into();
         let target: Weak<_> = receiver.clone();
 
@@ -180,25 +323,30 @@ impl<T> SignalInternal<T> {
             }
         });
 
-        match self.receivers.binary_search_by(|x| x.name.cmp(&name)) {
+        let id = self.idgen;
+        self.idgen += 1;
+
+        match self
+            .receivers
+            .binary_search_by(|x| x.relative_index.cmp(&order))
+        {
             Ok(idx) => {
-                if Weak::strong_count(&self.receivers[idx].target) == 0 {
-                    self.receivers[idx] = Receiver {
+                self.receivers.insert(
+                    idx + 1,
+                    Receiver {
                         handler,
-                        name,
-                        target,
-                    };
-                } else {
-                    panic!("Signal::connect name already exists: {:?}", name);
-                }
+                        relative_index: order,
+                        id,
+                    },
+                );
             }
             Err(idx) => {
                 self.receivers.insert(
                     idx,
                     Receiver {
                         handler,
-                        name,
-                        target,
+                        relative_index: order,
+                        id,
                     },
                 );
 
@@ -207,6 +355,8 @@ impl<T> SignalInternal<T> {
                 }
             }
         };
+
+        id
     }
 
     pub fn emit(self: Rw<Self>, item: T) {
@@ -215,7 +365,7 @@ impl<T> SignalInternal<T> {
         self.depth += 1;
         self.index = 0;
 
-        struct DeferDec<'a, 'b, T>(Rw<'a, 'b, SignalInternal<T>>);
+        struct DeferDec<'a, 'b, T>(Rw<'a, 'b, SignalInner<T>>);
 
         impl<T> Drop for DeferDec<'_, '_, T> {
             fn drop(&mut self) {
@@ -245,14 +395,9 @@ impl<T> SignalInternal<T> {
         drop(this);
     }
 
-    pub fn disconnect<C>(self: Rw<Self>, name: C)
-    where
-        C: Into<Cow<'static, str>>,
-    {
-        let name = name.into();
-        let idx = match self.receivers.binary_search_by(|x| x.name.cmp(&name)) {
-            Ok(idx) => idx,
-            Err(_) => return,
+    fn disconnect(self: Rw<Self>, id: u64) {
+        let Some(idx) = self.receivers.iter().position(|x| x.id == id) else {
+            return;
         };
 
         self.receivers.remove(idx);
@@ -263,6 +408,6 @@ impl<T> SignalInternal<T> {
     }
 }
 
-impl<T> Meta for SignalInternal<T> {
+impl<T> Meta for SignalInner<T> {
     type Data = ();
 }

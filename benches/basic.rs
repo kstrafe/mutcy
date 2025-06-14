@@ -104,7 +104,7 @@ fn criterion_benchmark(c: &mut Criterion) {
             for idx in 0..COUNT {
                 let receiver = Rc::new(KeyCell::new(idx, ()));
 
-                signal.connect(&mut key, &receiver, format!("{}", idx), |this, _: &()| {
+                signal.connect(&mut key, &receiver, |this, _: &()| {
                     **this += black_box(1);
                 });
 

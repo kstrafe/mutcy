@@ -19,7 +19,7 @@
       };
 
       rust-collection = pkgs.rust-bin.nightly.latest.default.override {
-        extensions = [ "miri-preview" "rust-analyzer" "rust-src" ];
+        extensions = [ "miri-preview" "rust-analyzer" "rust-src" "rustc-dev" "llvm-tools-preview" ];
       };
     in
       {
