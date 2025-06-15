@@ -15,18 +15,19 @@ struct Receiver<T> {
 }
 
 trait Disconnectable {
-    fn disconnect(&self, key: &mut Key, id: u64);
+    fn disconnect(&self, key: &mut Key, id: u64, relative_index: FractionalIndexType);
 }
 
 impl<T> Disconnectable for KeyCell<SignalInner<T>> {
-    fn disconnect(&self, key: &mut Key, id: u64) {
-        self.rw(key).disconnect(id);
+    fn disconnect(&self, key: &mut Key, id: u64, relative_index: FractionalIndexType) {
+        self.rw(key).disconnect(id, relative_index);
     }
 }
 
 /// References a connection created via [Signal::connect].
 pub struct Connection {
     inner: Rc<dyn Disconnectable>,
+    relative_index: FractionalIndexType,
     id: u64,
 }
 
@@ -36,7 +37,7 @@ impl Connection {
     /// Does nothing if the connection is already removed. This can happen if we
     /// destroy the receiver object and run [emit](Signal::emit).
     pub fn disconnect(self, key: &mut Key) {
-        self.inner.disconnect(key, self.id);
+        self.inner.disconnect(key, self.id, self.relative_index);
     }
 }
 
@@ -277,6 +278,7 @@ impl<T: 'static> Signal<T> {
 
         Connection {
             inner: self.inner.clone(),
+            relative_index: self.index.value(),
             id,
         }
     }
@@ -477,14 +479,27 @@ impl<T> SignalInner<T> {
         drop(this);
     }
 
-    fn disconnect(self: Rw<Self>, id: u64) {
-        let Some(idx) = self.receivers.iter().position(|x| x.id == id) else {
+    fn disconnect(self: Rw<Self>, id: u64, relative_index: FractionalIndexType) {
+        let left = self
+            .receivers
+            .partition_point(|x| x.relative_index < relative_index);
+        let right = self
+            .receivers
+            .partition_point(|x| x.relative_index <= relative_index);
+
+        let idx = self.receivers[left..right].partition_point(|x| x.id < id);
+
+        if idx + left >= self.receivers.len() {
             return;
-        };
+        }
 
-        self.receivers.remove(idx);
+        if self.receivers[idx + left].id != id {
+            return;
+        }
 
-        if idx < self.index {
+        self.receivers.remove(idx + left);
+
+        if idx + left < self.index {
             self.index -= 1;
         }
     }
