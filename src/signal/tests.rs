@@ -1,4 +1,6 @@
 use super::*;
+use quickcheck::{Arbitrary, Gen};
+use quickcheck_macros::quickcheck;
 use std::cell::{Cell, RefCell};
 
 #[test]
@@ -61,16 +63,10 @@ fn order() {
         signal.connect(key, &receiver, Announcer::handle);
 
         let receiver = Rc::new(Announcer::new("c", recorder.clone()));
-        signal
-            .after()
-            .unwrap()
-            .connect(key, &receiver, Announcer::handle);
+        signal.after().connect(key, &receiver, Announcer::handle);
 
         let receiver = Rc::new(Announcer::new("a", recorder.clone()));
-        signal
-            .before()
-            .unwrap()
-            .connect(key, &receiver, Announcer::handle);
+        signal.before().connect(key, &receiver, Announcer::handle);
 
         signal.emit(key, ());
     }
@@ -166,13 +162,103 @@ fn weak_without_strong_panics() {
 #[test]
 fn signal_ordering_limit() {
     let signal: Signal<()> = Signal::new();
-    let mut signal_before = signal.before().unwrap();
+    let mut signal_before = signal.before();
     for _ in 0..126 {
-        signal_before = signal_before.before().unwrap();
+        signal_before = signal_before.before();
+    }
+}
+
+#[test]
+fn signal_ordering_limit_exceeded() {
+    fn verify_exhausted(signal: &Signal<()>) {
+        use std::panic::AssertUnwindSafe;
+
+        let Err(msg) = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            let _ = signal.before();
+        })) else {
+            panic!("Fractional index not exhausted");
+        };
+
+        assert_eq!(
+            *msg.downcast::<String>().unwrap(),
+            "fractional index exhausted"
+        );
+
+        let Err(msg) = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            let _ = signal.after();
+        })) else {
+            panic!("Fractional index not exhausted");
+        };
+
+        assert_eq!(
+            *msg.downcast::<String>().unwrap(),
+            "fractional index exhausted"
+        );
     }
 
-    assert!(signal_before.before().is_none());
-    assert!(signal_before.after().is_none());
+    let signal: Signal<()> = Signal::new();
+    let mut signal_before = signal.before();
+    for _ in 0..126 {
+        signal_before = signal_before.before();
+    }
+
+    let mut signal_after = signal.after();
+    for _ in 0..126 {
+        signal_after = signal_after.after();
+    }
+
+    verify_exhausted(&signal_before);
+    verify_exhausted(&signal_after);
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct FractionalOrderDecisions {
+    decisions: Vec<bool>,
+}
+
+impl Arbitrary for FractionalOrderDecisions {
+    fn arbitrary(g: &mut Gen) -> Self {
+        let count = *g.choose(&(0..=127).collect::<Vec<_>>()).unwrap();
+
+        let mut decisions = Vec::with_capacity(count);
+        for _ in 0..count {
+            decisions.push(*g.choose(&[false, true]).unwrap());
+        }
+
+        Self { decisions }
+    }
+}
+
+#[quickcheck]
+fn different_ordering_has_different_fractional_order(
+    x: FractionalOrderDecisions,
+    y: FractionalOrderDecisions,
+) {
+    if x == y {
+        return;
+    }
+
+    let signal: Signal<()> = Signal::new();
+
+    let mut signal_x = signal.clone();
+    for decision in &x.decisions {
+        if *decision {
+            signal_x = signal_x.before();
+        } else {
+            signal_x = signal_x.after();
+        }
+    }
+
+    let mut signal_y = signal.clone();
+    for decision in &y.decisions {
+        if *decision {
+            signal_y = signal_y.before();
+        } else {
+            signal_y = signal_y.after();
+        }
+    }
+
+    assert!(signal_x.order() != signal_y.order());
 }
 
 #[test]
@@ -264,12 +350,9 @@ fn disconnect_while_emitting() {
         signal.clone(),
     ));
 
-    let connection = signal
-        .after()
-        .unwrap()
-        .connect(key, &receiver, move |this, _| {
-            this.value += "2";
-        });
+    let connection = signal.after().connect(key, &receiver, move |this, _| {
+        this.value += "2";
+    });
 
     let connection = RefCell::new(Some(connection));
     signal.connect(key, &receiver, move |this, _| {
@@ -329,43 +412,27 @@ fn ordering_recursion() {
 
     signal
         .before()
-        .unwrap()
         .after()
-        .unwrap()
         .after()
-        .unwrap()
         .connect(key, &receiver, |this, _| {
             **this += "c";
         });
 
-    signal
-        .before()
-        .unwrap()
-        .before()
-        .unwrap()
-        .connect(key, &receiver, |this, _| {
-            **this += "a";
-        });
+    signal.before().before().connect(key, &receiver, |this, _| {
+        **this += "a";
+    });
 
     signal
         .after()
-        .unwrap()
         .before()
-        .unwrap()
         .before()
-        .unwrap()
         .connect(key, &receiver, |this, _| {
             **this += "d";
         });
 
-    signal
-        .before()
-        .unwrap()
-        .after()
-        .unwrap()
-        .connect(key, &receiver, |this, _| {
-            **this += "b";
-        });
+    signal.before().after().connect(key, &receiver, |this, _| {
+        **this += "b";
+    });
 
     signal.emit(key, ());
     assert_eq!(*receiver.ro(key), "abcd");

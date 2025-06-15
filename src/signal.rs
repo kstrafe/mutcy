@@ -32,6 +32,9 @@ pub struct Connection {
 
 impl Connection {
     /// Disconnect this connection.
+    ///
+    /// Does nothing if the connection is already removed. This can happen if we
+    /// destroy the receiver object and run [emit](Signal::emit).
     pub fn disconnect(self, key: &mut Key) {
         self.inner.disconnect(key, self.id);
     }
@@ -84,7 +87,7 @@ impl Connection {
 /// let signal = Signal::new();
 /// let item = Rc::new(KeyCell::new(0, ()));
 ///
-/// signal.before().unwrap().connect(key, &item, |this, event| {
+/// signal.before().connect(key, &item, |this, event| {
 ///     **this *= event;
 /// });
 /// ```
@@ -99,6 +102,128 @@ impl<T: 'static> Signal<T> {
         Signal {
             inner: Rc::new(KeyCell::new(SignalInner::new(), ())),
             index: FractionalIndex::new(),
+        }
+    }
+
+    /// Creates a cloned `Signal` whose connections are invoked **before** the
+    /// parent signal's connections.
+    ///
+    /// By default, connections are invoked in the order they were created via
+    /// [`connect`](Signal::connect). This method creates a priority tier -
+    /// all connections made to the cloned signal will execute *before* any
+    /// connections on the parent signal.
+    ///
+    /// ## Invocation Order
+    /// - Parent signal: Base priority
+    /// - `before()` clones: Higher priority (executed first)
+    /// - `after()` clones: Lower priority (executed last)
+    ///
+    /// ## Panics ##
+    ///
+    /// Panics if the priority space is exhausted (after 127 nested
+    /// `before`/`after` calls).
+    ///
+    /// ## Ordering Notes ##
+    /// - `signal.before().after()` creates a middle priority tier between the
+    ///   parent and `before` clone.
+    /// - Subsequent calls to `before()`/`after()` on clones maintain their
+    ///   relative ordering.
+    ///
+    /// # Examples #
+    ///
+    /// ```
+    /// use mutcy::{Key, KeyCell, Rw, Signal};
+    /// use std::{cell::RefCell, rc::Rc};
+    ///
+    /// let key = &mut Key::acquire();
+    ///
+    /// let signal = Signal::new();
+    /// let shared = Rc::new(RefCell::new(Vec::new()));
+    ///
+    /// let item = Rc::new(KeyCell::new(1, ()));
+    ///
+    /// let shared_clone = shared.clone();
+    /// signal.connect(key, &item, move |this, event| {
+    ///     shared_clone.borrow_mut().push(1);
+    ///     println!("This runs after");
+    /// });
+    ///
+    /// let shared_clone = shared.clone();
+    /// signal.before().connect(key, &item, move |this, event| {
+    ///     shared_clone.borrow_mut().push(0);
+    ///     println!("This runs before");
+    /// });
+    ///
+    /// signal.emit(key, ());
+    /// assert_eq!(&*shared.borrow(), &[0, 1]);
+    /// ```
+    pub fn before(&self) -> Self {
+        let index = self.index.left().expect("fractional index exhausted");
+
+        Self {
+            inner: self.inner.clone(),
+            index,
+        }
+    }
+
+    /// Creates a cloned `Signal` whose connections are invoked **after** the
+    /// parent signal's connections.
+    ///
+    /// By default, connections are invoked in the order they were created via
+    /// [`connect`](Signal::connect). This method creates a priority tier -
+    /// all connections made to the cloned signal will execute *after* any
+    /// connections on the parent signal.
+    ///
+    /// ## Invocation Order
+    /// - Parent signal: Base priority
+    /// - `before()` clones: Higher priority (executed first)
+    /// - `after()` clones: Lower priority (executed last)
+    ///
+    /// ## Panics ##
+    ///
+    /// Panics if the priority space is exhausted (after 127 nested
+    /// `before`/`after` calls).
+    ///
+    /// ## Ordering Notes ##
+    /// - `signal.after().before()` creates a middle priority tier between the
+    ///   parent and `after` clone.
+    /// - Subsequent calls to `before()`/`after()` on clones maintain their
+    ///   relative ordering.
+    ///
+    /// # Examples #
+    ///
+    /// ```
+    /// use mutcy::{Key, KeyCell, Rw, Signal};
+    /// use std::{cell::RefCell, rc::Rc};
+    ///
+    /// let key = &mut Key::acquire();
+    ///
+    /// let signal = Signal::new();
+    /// let shared = Rc::new(RefCell::new(Vec::new()));
+    ///
+    /// let item = Rc::new(KeyCell::new(1, ()));
+    ///
+    /// let shared_clone = shared.clone();
+    /// signal.after().connect(key, &item, move |this, event| {
+    ///     shared_clone.borrow_mut().push(1);
+    ///     println!("This runs after");
+    /// });
+    ///
+    /// let shared_clone = shared.clone();
+    /// signal.connect(key, &item, move |this, event| {
+    ///     shared_clone.borrow_mut().push(0);
+    ///     println!("This runs before");
+    /// });
+    ///
+    /// signal.emit(key, ());
+    /// assert_eq!(&*shared.borrow(), &[0, 1]);
+    /// ```
+    pub fn after(&self) -> Self {
+        let index = self.index.right().expect("fractional index exhausted");
+
+        Self {
+            inner: self.inner.clone(),
+            index,
         }
     }
 
@@ -156,96 +281,6 @@ impl<T: 'static> Signal<T> {
         }
     }
 
-    /// Creates a [Signal] to which connections will be invoked before the
-    /// current signal.
-    ///
-    /// Normally, connections are invoked by the order in which their respective
-    /// [connect](Signal::connect)s
-    /// were called.
-    ///
-    /// # Examples #
-    ///
-    /// ```
-    /// use mutcy::{Key, KeyCell, Rw, Signal};
-    /// use std::{cell::RefCell, rc::Rc};
-    ///
-    /// let key = &mut Key::acquire();
-    ///
-    /// let signal = Signal::new();
-    /// let shared = Rc::new(RefCell::new(Vec::new()));
-    ///
-    /// let item = Rc::new(KeyCell::new(1, ()));
-    ///
-    /// let shared_clone = shared.clone();
-    /// signal.connect(key, &item, move |this, event| {
-    ///     shared_clone.borrow_mut().push(1);
-    ///     println!("This runs after");
-    /// });
-    ///
-    /// let shared_clone = shared.clone();
-    /// signal
-    ///     .before()
-    ///     .unwrap()
-    ///     .connect(key, &item, move |this, event| {
-    ///         shared_clone.borrow_mut().push(0);
-    ///         println!("This runs before");
-    ///     });
-    ///
-    /// signal.emit(key, ());
-    /// assert_eq!(&*shared.borrow(), &[0, 1]);
-    /// ```
-    pub fn before(&self) -> Option<Self> {
-        self.index.left().map(|index| Self {
-            inner: self.inner.clone(),
-            index,
-        })
-    }
-
-    /// Creates a [Signal] to which connections will be invoked after the
-    /// current signal.
-    ///
-    /// Normally, connections are invoked by the order in which their respective
-    /// [connect](Signal::connect)s
-    /// were called.
-    ///
-    /// # Examples #
-    ///
-    /// ```
-    /// use mutcy::{Key, KeyCell, Rw, Signal};
-    /// use std::{cell::RefCell, rc::Rc};
-    ///
-    /// let key = &mut Key::acquire();
-    ///
-    /// let signal = Signal::new();
-    /// let shared = Rc::new(RefCell::new(Vec::new()));
-    ///
-    /// let item = Rc::new(KeyCell::new(1, ()));
-    ///
-    /// let shared_clone = shared.clone();
-    /// signal
-    ///     .after()
-    ///     .unwrap()
-    ///     .connect(key, &item, move |this, event| {
-    ///         shared_clone.borrow_mut().push(1);
-    ///         println!("This runs after");
-    ///     });
-    ///
-    /// let shared_clone = shared.clone();
-    /// signal.connect(key, &item, move |this, event| {
-    ///     shared_clone.borrow_mut().push(0);
-    ///     println!("This runs before");
-    /// });
-    ///
-    /// signal.emit(key, ());
-    /// assert_eq!(&*shared.borrow(), &[0, 1]);
-    /// ```
-    pub fn after(&self) -> Option<Self> {
-        self.index.right().map(|index| Self {
-            inner: self.inner.clone(),
-            index,
-        })
-    }
-
     /// Emits a value to all receivers.
     ///
     /// Since [KeyCell] permits recursive borrowing, it is possible to call
@@ -258,6 +293,66 @@ impl<T: 'static> Signal<T> {
     /// This allows us to add a receiver that modifies the data and re-emits.
     pub fn emit(&self, key: &mut Key, item: T) {
         self.inner.rw(key).emit(item);
+    }
+
+    /// Returns the relative order of this signal.
+    ///
+    /// Note that comparisons of orders only gives meaningful information for
+    /// the same underlying signal - that is - signals cloned using `before`
+    /// or `after`. Two distinct signals have unrelated orderings.
+    ///
+    /// See [before](Signal::before) and [after](Signal::after) for more
+    /// details.
+    ///
+    /// # Example #
+    ///
+    /// ```
+    /// use mutcy::Signal;
+    ///
+    /// let signal: Signal<()> = Signal::new();
+    ///
+    /// assert_eq!(170141183460469231731687303715884105727, signal.order());
+    ///
+    /// assert_eq!(
+    ///     85070591730234615865843651857942052863,
+    ///     signal.before().order()
+    /// );
+    /// assert_eq!(
+    ///     127605887595351923798765477786913079295,
+    ///     signal.before().after().order()
+    /// );
+    ///
+    /// assert_eq!(
+    ///     255211775190703847597530955573826158591,
+    ///     signal.after().order()
+    /// );
+    /// assert_eq!(
+    ///     212676479325586539664609129644855132159,
+    ///     signal.after().before().order()
+    /// );
+    ///
+    /// let max_before = {
+    ///     let mut max_before = signal.before();
+    ///     for _ in 0..126 {
+    ///         max_before = max_before.before();
+    ///     }
+    ///     max_before
+    /// };
+    ///
+    /// assert_eq!(max_before.order(), 0);
+    ///
+    /// let max_after = {
+    ///     let mut max_after = signal.after();
+    ///     for _ in 0..126 {
+    ///         max_after = max_after.after();
+    ///     }
+    ///     max_after
+    /// };
+    ///
+    /// assert_eq!(max_after.order(), u128::MAX - 1);
+    /// ```
+    pub fn order(&self) -> FractionalIndexType {
+        self.index.value()
     }
 }
 
@@ -326,35 +421,22 @@ impl<T> SignalInner<T> {
         let id = self.idgen;
         self.idgen += 1;
 
-        match self
+        let idx = self
             .receivers
-            .binary_search_by(|x| x.relative_index.cmp(&order))
-        {
-            Ok(idx) => {
-                self.receivers.insert(
-                    idx + 1,
-                    Receiver {
-                        handler,
-                        relative_index: order,
-                        id,
-                    },
-                );
-            }
-            Err(idx) => {
-                self.receivers.insert(
-                    idx,
-                    Receiver {
-                        handler,
-                        relative_index: order,
-                        id,
-                    },
-                );
+            .partition_point(|x| x.relative_index <= order);
 
-                if idx < self.index {
-                    self.index -= 1;
-                }
-            }
-        };
+        self.receivers.insert(
+            idx,
+            Receiver {
+                handler,
+                relative_index: order,
+                id,
+            },
+        );
+
+        if idx < self.index {
+            self.index -= 1;
+        }
 
         id
     }
