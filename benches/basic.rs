@@ -119,6 +119,65 @@ fn criterion_benchmark(c: &mut Criterion) {
             });
         });
 
+        group.bench_function("subsignal", |bench| {
+            let mut key = Key::acquire();
+            let signal = Signal::new();
+
+            let mut receivers = Vec::new();
+
+            for idx in 0..COUNT {
+                let receiver = Rc::new(KeyCell::new(idx, ()));
+
+                signal
+                    .subsignal(&mut key)
+                    .connect(&mut key, &receiver, |this, _: &()| {
+                        **this += black_box(1);
+                    });
+
+                receivers.push(receiver);
+            }
+
+            bench.iter(|| {
+                black_box(&signal).emit(&mut key, ());
+            });
+        });
+
+        group.bench_function("disconnect_plain", |bench| {
+            let mut key = Key::acquire();
+
+            let signal = Signal::new();
+            let before = signal.before(&mut key);
+
+            let receiver = Rc::new(KeyCell::new((), ()));
+
+            for _ in 0..COUNT {
+                signal.connect(&mut key, &receiver, |_, _: &()| {});
+            }
+
+            bench.iter(|| {
+                let conn = before.connect(&mut key, &receiver, |_, _| {});
+                conn.disconnect(&mut key);
+            });
+        });
+
+        group.bench_function("disconnect_using_subsignal", |bench| {
+            let mut key = Key::acquire();
+
+            let signal = Signal::new();
+            let before = signal.before(&mut key).subsignal(&mut key);
+
+            let receiver = Rc::new(KeyCell::new((), ()));
+
+            for _ in 0..COUNT {
+                signal.connect(&mut key, &receiver, |_, _: &()| {});
+            }
+
+            bench.iter(|| {
+                let conn = before.connect(&mut key, &receiver, |_, _| {});
+                conn.disconnect(&mut key);
+            });
+        });
+
         group.finish();
     }
 
@@ -149,7 +208,9 @@ fn criterion_benchmark(c: &mut Criterion) {
             let receiver = Rc::new(KeyCell::new(0, ()));
 
             for _ in 0..COUNT {
-                signal.before().connect(&mut key, &receiver, |_, _| {});
+                signal
+                    .before(&mut key)
+                    .connect(&mut key, &receiver, |_, _| {});
             }
 
             bench.iter_custom(|iters| {

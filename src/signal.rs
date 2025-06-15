@@ -18,7 +18,7 @@ trait Disconnectable {
     fn disconnect(&self, key: &mut Key, id: u64, relative_index: FractionalIndexType);
 }
 
-impl<T> Disconnectable for KeyCell<SignalInner<T>> {
+impl<T: 'static> Disconnectable for KeyCell<SignalInner<T>> {
     fn disconnect(&self, key: &mut Key, id: u64, relative_index: FractionalIndexType) {
         self.rw(key).disconnect(id, relative_index);
     }
@@ -36,6 +36,13 @@ impl Connection {
     ///
     /// Does nothing if the connection is already removed. This can happen if we
     /// destroy the receiver object and run [emit](Signal::emit).
+    ///
+    /// # Time Complexity #
+    ///
+    /// Takes `O(connection_count)` time. All connections that come after this
+    /// connection need to be shifted by one position. In the worst case if
+    /// disconnecting the first connection, all other connections must be
+    /// shifted.
     pub fn disconnect(self, key: &mut Key) {
         self.inner.disconnect(key, self.id, self.relative_index);
     }
@@ -72,9 +79,9 @@ impl Connection {
 ///
 /// # Connection Ordering #
 ///
-/// [connect](Signal::connect)ions are invoked upon a call to
+/// [Connect](Signal::connect)ions are invoked upon a call to
 /// [emit](Signal::emit). The order of these invocations corresponds
-/// to the order in which [connect](Signal::connect) was called.
+/// to the order in which `connect` was called.
 ///
 /// Using [before](Signal::before) or [after](Signal::after) allows different
 /// ordering using fractional indexing.
@@ -88,7 +95,7 @@ impl Connection {
 /// let signal = Signal::new();
 /// let item = Rc::new(KeyCell::new(0, ()));
 ///
-/// signal.before().connect(key, &item, |this, event| {
+/// signal.before(key).connect(key, &item, |this, event| {
 ///     **this *= event;
 /// });
 /// ```
@@ -116,19 +123,14 @@ impl<T: 'static> Signal<T> {
     ///
     /// ## Invocation Order
     /// - Parent signal: Base priority
-    /// - `before()` clones: Higher priority (executed first)
-    /// - `after()` clones: Lower priority (executed last)
-    ///
-    /// ## Panics ##
-    ///
-    /// Panics if the priority space is exhausted (after 127 nested
-    /// `before`/`after` calls).
+    /// - `before(key)` clones: Higher priority (executed first)
+    /// - `after(key)` clones: Lower priority (executed last)
     ///
     /// ## Ordering Notes ##
-    /// - `signal.before().after()` creates a middle priority tier between the
-    ///   parent and `before` clone.
-    /// - Subsequent calls to `before()`/`after()` on clones maintain their
-    ///   relative ordering.
+    /// - `signal.before(key).after(key)` creates a middle priority tier between
+    ///   the parent and `before` clone.
+    /// - Subsequent calls to `before(key)`/`after(key)` on clones maintain
+    ///   their relative ordering.
     ///
     /// # Examples #
     ///
@@ -150,7 +152,7 @@ impl<T: 'static> Signal<T> {
     /// });
     ///
     /// let shared_clone = shared.clone();
-    /// signal.before().connect(key, &item, move |this, event| {
+    /// signal.before(key).connect(key, &item, move |this, event| {
     ///     shared_clone.borrow_mut().push(0);
     ///     println!("This runs before");
     /// });
@@ -158,12 +160,14 @@ impl<T: 'static> Signal<T> {
     /// signal.emit(key, ());
     /// assert_eq!(&*shared.borrow(), &[0, 1]);
     /// ```
-    pub fn before(&self) -> Self {
-        let index = self.index.left().expect("fractional index exhausted");
-
-        Self {
-            inner: self.inner.clone(),
-            index,
+    pub fn before(&self, key: &mut Key) -> Self {
+        if let Some(index) = self.index.left() {
+            Self {
+                inner: self.inner.clone(),
+                index,
+            }
+        } else {
+            self.subsignal(key)
         }
     }
 
@@ -177,19 +181,14 @@ impl<T: 'static> Signal<T> {
     ///
     /// ## Invocation Order
     /// - Parent signal: Base priority
-    /// - `before()` clones: Higher priority (executed first)
-    /// - `after()` clones: Lower priority (executed last)
-    ///
-    /// ## Panics ##
-    ///
-    /// Panics if the priority space is exhausted (after 127 nested
-    /// `before`/`after` calls).
+    /// - `before(key)` clones: Higher priority (executed first)
+    /// - `after(key)` clones: Lower priority (executed last)
     ///
     /// ## Ordering Notes ##
-    /// - `signal.after().before()` creates a middle priority tier between the
-    ///   parent and `after` clone.
-    /// - Subsequent calls to `before()`/`after()` on clones maintain their
-    ///   relative ordering.
+    /// - `signal.after(key).before(key)` creates a middle priority tier between
+    ///   the parent and `after` clone.
+    /// - Subsequent calls to `before(key)`/`after(key)` on clones maintain
+    ///   their relative ordering.
     ///
     /// # Examples #
     ///
@@ -205,7 +204,7 @@ impl<T: 'static> Signal<T> {
     /// let item = Rc::new(KeyCell::new(1, ()));
     ///
     /// let shared_clone = shared.clone();
-    /// signal.after().connect(key, &item, move |this, event| {
+    /// signal.after(key).connect(key, &item, move |this, event| {
     ///     shared_clone.borrow_mut().push(1);
     ///     println!("This runs after");
     /// });
@@ -219,12 +218,14 @@ impl<T: 'static> Signal<T> {
     /// signal.emit(key, ());
     /// assert_eq!(&*shared.borrow(), &[0, 1]);
     /// ```
-    pub fn after(&self) -> Self {
-        let index = self.index.right().expect("fractional index exhausted");
-
-        Self {
-            inner: self.inner.clone(),
-            index,
+    pub fn after(&self, key: &mut Key) -> Self {
+        if let Some(index) = self.index.right() {
+            Self {
+                inner: self.inner.clone(),
+                index,
+            }
+        } else {
+            self.subsignal(key)
         }
     }
 
@@ -239,7 +240,9 @@ impl<T: 'static> Signal<T> {
     /// cycle. If the `Signal` is instead held inside `receiver`, no
     /// reference cycle will be possible.
     ///
-    /// Also note that this function requires the receiver to have a strong
+    /// # Panics #
+    ///
+    /// Panics if the receiver has no strong
     /// reference. This is to prevent cases such as [Rc::new_cyclic]
     /// connecting a weak followed by an [emit](Signal::emit) causing the
     /// not-yet constructed `Rc` from being removed.
@@ -283,6 +286,104 @@ impl<T: 'static> Signal<T> {
         }
     }
 
+    /// Creates a new subsignal.
+    ///
+    /// Creates a new [Signal] object and connects it to this (parent) signal.
+    /// Any [emit](Signal::emit) run on the
+    /// parent signal is forwarded to the subsignal.
+    ///
+    /// The main purpose of a subsignal is to group together a set of slots for
+    /// two reasons.
+    ///
+    /// 1. To group connections together.
+    /// 2. To enable fast [disconnect](Connection)ion.
+    ///
+    /// # Performance #
+    /// Subsignals are an extra indirection step making them about 3-4x slower
+    /// than a non-subsignal connection.
+    ///
+    /// # Examples #
+    ///
+    /// ## Example: Grouping ##
+    ///
+    /// In the following example we group together a set of connections. Note
+    /// that because `subsignal_1` is created before `subsignal_2`, that any
+    /// [emit](Signal::emit) will invoke `subsignal_1` before `subsignal_2`;
+    /// this is the same ordering that [connect](Signal::connect) uses.
+    ///
+    /// ```
+    /// use mutcy::{Key, KeyCell, Rw, Signal};
+    /// use std::rc::Rc;
+    ///
+    /// let key = &mut Key::acquire();
+    ///
+    /// let signal = Signal::new();
+    /// let subsignal_1 = signal.subsignal(key);
+    /// let subsignal_2 = signal.subsignal(key);
+    ///
+    /// let item = Rc::new(KeyCell::new(String::new(), ()));
+    ///
+    /// subsignal_1.connect(key, &item, |this, event| {
+    ///     **this += "a";
+    /// });
+    ///
+    /// subsignal_2.connect(key, &item, |this, event| {
+    ///     **this += "c";
+    /// });
+    ///
+    /// subsignal_1.connect(key, &item, |this, event| {
+    ///     **this += "b";
+    /// });
+    ///
+    /// signal.emit(key, ());
+    ///
+    /// assert_eq!(*item.ro(key), "abc");
+    /// ```
+    ///
+    /// ## Example: Fast disconnection ##
+    ///
+    /// [Connection::disconnect] is an `O(N)` operation. As such, frequently
+    /// connecting and disconnecting a connection in a significantly
+    /// populated [Signal] would lead to slowdowns.
+    ///
+    /// To remedy this, we can use a subsignal to hold the frequently changing
+    /// set of connections, given that this set might be significantly
+    /// smaller.
+    ///
+    /// ```
+    /// use mutcy::{Key, KeyCell, Rw, Signal};
+    /// use std::rc::Rc;
+    ///
+    /// let key = &mut Key::acquire();
+    ///
+    /// let signal: Signal<()> = Signal::new();
+    ///
+    /// // Without the `subsignal(key)` call here, the last loop in
+    /// // this example runs much slower.
+    /// let frequently_changing = signal.before(key).subsignal(key);
+    ///
+    /// let item = Rc::new(KeyCell::new(String::new(), ()));
+    ///
+    /// for _ in 0..1_000_000 {
+    ///     signal.connect(key, &item, |_, _| {});
+    /// }
+    ///
+    /// for _ in 0..1_000_000 {
+    ///     // This is fast because the subsignal contains at most 1 element.
+    ///     let conn = frequently_changing.connect(key, &item, |_, _| {});
+    ///     conn.disconnect(key);
+    /// }
+    /// ```
+    pub fn subsignal(&self, key: &mut Key) -> Self {
+        let index = self.index;
+        let inner = self.inner.rw(key).subsignal(index.value());
+
+        Self {
+            inner,
+            index: FractionalIndex::new(),
+        }
+    }
+
     /// Emits a value to all receivers.
     ///
     /// Since [KeyCell] permits recursive borrowing, it is possible to call
@@ -295,66 +396,6 @@ impl<T: 'static> Signal<T> {
     /// This allows us to add a receiver that modifies the data and re-emits.
     pub fn emit(&self, key: &mut Key, item: T) {
         self.inner.rw(key).emit(item);
-    }
-
-    /// Returns the relative order of this signal.
-    ///
-    /// Note that comparisons of orders only gives meaningful information for
-    /// the same underlying signal - that is - signals cloned using `before`
-    /// or `after`. Two distinct signals have unrelated orderings.
-    ///
-    /// See [before](Signal::before) and [after](Signal::after) for more
-    /// details.
-    ///
-    /// # Example #
-    ///
-    /// ```
-    /// use mutcy::Signal;
-    ///
-    /// let signal: Signal<()> = Signal::new();
-    ///
-    /// assert_eq!(170141183460469231731687303715884105727, signal.order());
-    ///
-    /// assert_eq!(
-    ///     85070591730234615865843651857942052863,
-    ///     signal.before().order()
-    /// );
-    /// assert_eq!(
-    ///     127605887595351923798765477786913079295,
-    ///     signal.before().after().order()
-    /// );
-    ///
-    /// assert_eq!(
-    ///     255211775190703847597530955573826158591,
-    ///     signal.after().order()
-    /// );
-    /// assert_eq!(
-    ///     212676479325586539664609129644855132159,
-    ///     signal.after().before().order()
-    /// );
-    ///
-    /// let max_before = {
-    ///     let mut max_before = signal.before();
-    ///     for _ in 0..126 {
-    ///         max_before = max_before.before();
-    ///     }
-    ///     max_before
-    /// };
-    ///
-    /// assert_eq!(max_before.order(), 0);
-    ///
-    /// let max_after = {
-    ///     let mut max_after = signal.after();
-    ///     for _ in 0..126 {
-    ///         max_after = max_after.after();
-    ///     }
-    ///     max_after
-    /// };
-    ///
-    /// assert_eq!(max_after.order(), u128::MAX - 1);
-    /// ```
-    pub fn order(&self) -> FractionalIndexType {
-        self.index.value()
     }
 }
 
@@ -381,7 +422,7 @@ struct SignalInner<T> {
     idgen: u64,
 }
 
-impl<T> SignalInner<T> {
+impl<T: 'static> SignalInner<T> {
     pub fn new() -> Self {
         Self {
             receivers: Vec::new(),
@@ -443,7 +484,51 @@ impl<T> SignalInner<T> {
         id
     }
 
+    pub fn subsignal(self: Rw<Self>, order: FractionalIndexType) -> Rc<KeyCell<Self>> {
+        let signal = Rc::new(KeyCell::new(Self::new(), ()));
+
+        let receiver = signal.clone();
+
+        let handler: Rc<Handler<T>> = Rc::new(move |key, item| {
+            let strong = Rc::strong_count(&receiver);
+            let mut receiver = receiver.rw(key);
+
+            if strong == 1 && receiver.len() == 0 {
+                return true;
+            }
+
+            receiver.emit_ref(item);
+            false
+        });
+
+        let id = self.idgen;
+        self.idgen += 1;
+
+        let idx = self
+            .receivers
+            .partition_point(|x| x.relative_index <= order);
+
+        self.receivers.insert(
+            idx,
+            Receiver {
+                handler,
+                relative_index: order,
+                id,
+            },
+        );
+
+        if idx < self.index {
+            self.index -= 1;
+        }
+
+        signal
+    }
+
     pub fn emit(self: Rw<Self>, item: T) {
+        self.emit_ref(&item);
+    }
+
+    pub fn emit_ref(self: Rw<Self>, item: &T) {
         self.top = self.depth;
         let top = self.top;
         self.depth += 1;
@@ -465,7 +550,7 @@ impl<T> SignalInner<T> {
 
             let (_, key) = Key::split_rw(this.0);
 
-            if (receiver)(key, &item) {
+            if (receiver)(key, item) {
                 this.0.index -= 1;
                 let index = this.0.index;
                 this.0.receivers.remove(index);
@@ -502,6 +587,10 @@ impl<T> SignalInner<T> {
         if idx + left < self.index {
             self.index -= 1;
         }
+    }
+
+    fn len(self: Rw<Self>) -> usize {
+        self.receivers.len()
     }
 }
 
