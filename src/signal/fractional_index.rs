@@ -1,4 +1,4 @@
-pub type FractionalIndexType = u128;
+pub type FractionalIndexType = u32;
 
 #[derive(Clone, Copy)]
 pub struct FractionalIndex {
@@ -9,13 +9,14 @@ pub struct FractionalIndex {
 impl FractionalIndex {
     pub fn new() -> Self {
         Self {
-            current: FractionalIndexType::MAX / 2,
+            current: FractionalIndexType::MAX / 2 + 1,
             half: FractionalIndexType::MAX / 4 + 1,
         }
     }
 
     pub fn left(self) -> Option<Self> {
-        if self.half > 0 {
+        debug_assert!(self.current % 2 == 0);
+        if self.half > 1 {
             Some(Self {
                 current: self.current - self.half,
                 half: self.half / 2,
@@ -26,7 +27,8 @@ impl FractionalIndex {
     }
 
     pub fn right(self) -> Option<Self> {
-        if self.half > 0 {
+        debug_assert!(self.current % 2 == 0);
+        if self.half > 1 {
             Some(Self {
                 current: self.current + self.half,
                 half: self.half / 2,

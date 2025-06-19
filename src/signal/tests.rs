@@ -1,10 +1,13 @@
-use super::*;
+use super::{Connection, Key, KeyCell, Meta, Rw, Signal};
 use quickcheck::{Arbitrary, Gen};
 use quickcheck_macros::quickcheck;
 use std::{
     cell::{Cell, RefCell},
     cmp::Ordering,
+    rc::{Rc, Weak},
 };
+
+const DEPTH: u32 = Signal::<()>::ordering_depth();
 
 #[test]
 fn emit_and_receive() {
@@ -171,7 +174,15 @@ struct FractionalOrderDecisions {
 
 impl Arbitrary for FractionalOrderDecisions {
     fn arbitrary(g: &mut Gen) -> Self {
-        let count = *g.choose(&(0..=1000).collect::<Vec<_>>()).unwrap();
+        fn list() -> [usize; (DEPTH as usize) * 2] {
+            let mut array = [0; (DEPTH as usize) * 2];
+            for idx in 0..array.len() {
+                array[idx] = idx;
+            }
+            array
+        }
+
+        let count = *g.choose(&list()).unwrap();
 
         let mut decisions = Vec::with_capacity(count);
         for _ in 0..count {
@@ -242,10 +253,6 @@ fn different_ordering_has_different_fractional_order(
     x: FractionalOrderDecisions,
     y: FractionalOrderDecisions,
 ) {
-    if x == y {
-        return;
-    }
-
     let key = &mut Key::acquire();
 
     let signal: Signal<()> = Signal::new();
@@ -268,6 +275,12 @@ fn different_ordering_has_different_fractional_order(
         }
     }
 
+    if x == y {
+        assert!(signal_x == signal_y);
+    } else {
+        assert!(signal_x != signal_y);
+    }
+
     let receiver = Rc::new(KeyCell::new(String::new(), ()));
     signal_x.connect(key, &receiver, |this, _| {
         **this += "x";
@@ -279,11 +292,37 @@ fn different_ordering_has_different_fractional_order(
 
     signal.emit(key, ());
 
-    if x < y {
+    if x <= y {
         assert_eq!(*receiver.ro(key), "xy");
     } else {
         assert_eq!(*receiver.ro(key), "yx");
     }
+}
+
+#[quickcheck]
+fn same_order_refers_to_same_signal_object(order: FractionalOrderDecisions) {
+    let key = &mut Key::acquire();
+    let signal: Signal<()> = Signal::new();
+
+    let mut signal_x = signal.clone();
+    for decision in &order.decisions {
+        if *decision {
+            signal_x = signal_x.after(key);
+        } else {
+            signal_x = signal_x.before(key);
+        }
+    }
+
+    let mut signal_y = signal.clone();
+    for decision in &order.decisions {
+        if *decision {
+            signal_y = signal_y.after(key);
+        } else {
+            signal_y = signal_y.before(key);
+        }
+    }
+
+    assert!(signal_x == signal_y);
 }
 
 #[test]
@@ -487,4 +526,73 @@ fn subsignal() {
 
     signal.emit(key, ());
     assert_eq!(*receiver.ro(key), "ab");
+}
+
+#[test]
+fn ordering_subsignal_reuses_before() {
+    let key = &mut Key::acquire();
+    let signal: Signal<()> = Signal::new();
+
+    let mut subsignal_1 = signal.before(key);
+    for _ in 0..DEPTH {
+        subsignal_1 = subsignal_1.before(key);
+    }
+
+    let mut subsignal_2 = signal.before(key);
+    for _ in 0..DEPTH {
+        subsignal_2 = subsignal_2.before(key);
+    }
+
+    assert!(subsignal_1 == subsignal_2);
+
+    let receiver = Rc::new(KeyCell::new(String::new(), ()));
+
+    subsignal_2.connect(key, &receiver, |this, _| {
+        **this += "a";
+    });
+
+    subsignal_1.connect(key, &receiver, |this, _| {
+        **this += "b";
+    });
+
+    signal.emit(key, ());
+    assert_eq!(*receiver.ro(key), "ab");
+}
+
+#[test]
+fn ordering_subsignal_reuses_after() {
+    let key = &mut Key::acquire();
+    let signal: Signal<()> = Signal::new();
+
+    let mut subsignal_1 = signal.after(key);
+    for _ in 0..DEPTH {
+        subsignal_1 = subsignal_1.after(key);
+    }
+
+    let mut subsignal_2 = signal.after(key);
+    for _ in 0..DEPTH {
+        subsignal_2 = subsignal_2.after(key);
+    }
+
+    assert!(subsignal_1 == subsignal_2);
+
+    let receiver = Rc::new(KeyCell::new(String::new(), ()));
+
+    subsignal_2.connect(key, &receiver, |this, _| {
+        **this += "a";
+    });
+
+    subsignal_1.connect(key, &receiver, |this, _| {
+        **this += "b";
+    });
+
+    signal.emit(key, ());
+    assert_eq!(*receiver.ro(key), "ab");
+}
+
+#[test]
+fn emit_using_reference() {
+    let key = &mut Key::acquire();
+    let signal: Signal<()> = Signal::new();
+    signal.emit(key, &());
 }

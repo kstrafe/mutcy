@@ -1,8 +1,12 @@
-use self::fractional_index::{FractionalIndex, FractionalIndexType};
+use self::{
+    fractional_index::{FractionalIndex, FractionalIndexType},
+    inner::SignalInner,
+};
 use super::{IntoWeak, Key, KeyCell, Meta, Rw};
-use std::rc::{Rc, Weak};
+use std::{borrow::Borrow, rc::Rc};
 
 mod fractional_index;
+mod inner;
 #[cfg(test)]
 mod tests;
 
@@ -167,7 +171,7 @@ impl<T: 'static> Signal<T> {
                 index,
             }
         } else {
-            self.subsignal(key)
+            self.subsignal_at(key, self.index.value() - 1)
         }
     }
 
@@ -225,7 +229,7 @@ impl<T: 'static> Signal<T> {
                 index,
             }
         } else {
-            self.subsignal(key)
+            self.subsignal_at(key, self.index.value() + 1)
         }
     }
 
@@ -274,6 +278,7 @@ impl<T: 'static> Signal<T> {
         I: IntoWeak<R>,
         F: Fn(Rw<R>, &T) + 'static,
     {
+        let receiver = receiver.into();
         let id = self
             .inner
             .rw(key)
@@ -290,12 +295,14 @@ impl<T: 'static> Signal<T> {
     ///
     /// Creates a new [Signal] object and connects it to this (parent) signal.
     /// Any [emit](Signal::emit) run on the
-    /// parent signal is forwarded to the subsignal.
+    /// parent signal is forwarded to the subsignal at this particular order as
+    /// specified by previous [before](Signal::before)/
+    /// [after](Signal::after) calls.
     ///
     /// The main purpose of a subsignal is to group together a set of slots for
     /// two reasons.
     ///
-    /// 1. To group connections together.
+    /// 1. Cluster connections into a single priority group.
     /// 2. To enable fast [disconnect](Connection)ion.
     ///
     /// # Performance #
@@ -304,7 +311,7 @@ impl<T: 'static> Signal<T> {
     ///
     /// # Examples #
     ///
-    /// ## Example: Grouping ##
+    /// ## Example: Clustering into  single priority group ##
     ///
     /// In the following example we group together a set of connections. Note
     /// that because `subsignal_1` is created before `subsignal_2`, that any
@@ -331,6 +338,8 @@ impl<T: 'static> Signal<T> {
     ///     **this += "c";
     /// });
     ///
+    /// // Even though this is connected later, it's connected to subsignal_1, which is ordered
+    /// // before subsignal_2, so this will run before any connection to subsignal_2.
     /// subsignal_1.connect(key, &item, |this, event| {
     ///     **this += "b";
     /// });
@@ -343,12 +352,11 @@ impl<T: 'static> Signal<T> {
     /// ## Example: Fast disconnection ##
     ///
     /// [Connection::disconnect] is an `O(N)` operation. As such, frequently
-    /// connecting and disconnecting a connection in a significantly
+    /// connecting and disconnecting a connection to a significantly
     /// populated [Signal] would lead to slowdowns.
     ///
     /// To remedy this, we can use a subsignal to hold the frequently changing
-    /// set of connections, given that this set might be significantly
-    /// smaller.
+    /// set of connections.
     ///
     /// ```
     /// use mutcy::{Key, KeyCell, Rw, Signal};
@@ -364,24 +372,45 @@ impl<T: 'static> Signal<T> {
     ///
     /// let item = Rc::new(KeyCell::new(String::new(), ()));
     ///
-    /// for _ in 0..1_000_000 {
+    /// for _ in 0..1_000 {
     ///     signal.connect(key, &item, |_, _| {});
     /// }
     ///
-    /// for _ in 0..1_000_000 {
+    /// for _ in 0..1_000 {
     ///     // This is fast because the subsignal contains at most 1 element.
     ///     let conn = frequently_changing.connect(key, &item, |_, _| {});
     ///     conn.disconnect(key);
     /// }
     /// ```
     pub fn subsignal(&self, key: &mut Key) -> Self {
-        let index = self.index;
-        let inner = self.inner.rw(key).subsignal(index.value());
+        let index = self.index.value();
+        let inner = self.inner.rw(key).subsignal(index);
 
         Self {
             inner,
             index: FractionalIndex::new(),
         }
+    }
+
+    fn subsignal_at(&self, key: &mut Key, index: FractionalIndexType) -> Self {
+        assert!(index % 2 == 1);
+
+        if let Some(subsignal) = self.inner.rw(key).preexisting_subsignal(index) {
+            return subsignal;
+        }
+
+        let inner = self.inner.rw(key).subsignal(index);
+
+        let subsignal = Self {
+            inner,
+            index: FractionalIndex::new(),
+        };
+
+        self.inner
+            .rw(key)
+            .register_subsignal(subsignal.clone(), index);
+
+        subsignal
     }
 
     /// Emits a value to all receivers.
@@ -393,9 +422,100 @@ impl<T: 'static> Signal<T> {
     /// do this because we can assume that subsequent emits have more
     /// up-to-date information to emit.
     ///
-    /// This allows us to add a receiver that modifies the data and re-emits.
-    pub fn emit(&self, key: &mut Key, item: T) {
-        self.inner.rw(key).emit(item);
+    /// This allows us to add a receiver that effectively modifies the data and
+    /// re-emits.
+    ///
+    /// # Examples #
+    ///
+    /// ## Plain emitting ##
+    ///
+    /// ```
+    /// use mutcy::{Key, KeyCell, Signal};
+    /// use std::rc::Rc;
+    ///
+    /// let key = &mut Key::acquire();
+    /// let signal = Signal::new();
+    /// let receiver = Rc::new(KeyCell::new(String::new(), ()));
+    ///
+    /// signal.connect(key, &receiver, |this, value| {
+    ///     **this += &format!("Number: {}\n", value);
+    /// });
+    ///
+    /// // Both call-by-moving and by-reference work.
+    /// signal.emit(key, 123);
+    /// signal.emit(key, &456);
+    ///
+    /// assert_eq!(*receiver.ro(key), "Number: 123\nNumber: 456\n");
+    /// ```
+    ///
+    /// ## Nested emits ##
+    ///
+    /// A signal handler can call `emit` on the same signal that invoked the
+    /// handler. In those cases, the outermost `emit` will return early upon
+    /// the signal handler returning. The nested `emit` call will run all
+    /// receivers as if it were calling it as the outer `emit`. From any
+    /// call to `emit`, we are thus guaranteed that all receivers are called.
+    ///
+    /// In the example here, the outer emit will effectively observe that
+    /// receivers are called with the argument `0` until `b` is reached.
+    /// After that, the emit resets to `1` and all receivers
+    /// are again executed with this new argument. `C(0)` is never executed.
+    ///
+    /// ```
+    /// use mutcy::{Key, KeyCell, Meta, Signal};
+    /// use std::{cell::RefCell, rc::Rc};
+    ///
+    /// let key = &mut Key::acquire();
+    /// let signal = Signal::new();
+    ///
+    /// let record = Rc::new(RefCell::new(String::new()));
+    ///
+    /// struct X {
+    ///     record: Rc<RefCell<String>>,
+    /// }
+    ///
+    /// impl Meta for X {
+    ///     type Data = Signal<i32>;
+    /// }
+    ///
+    /// let receiver = Rc::new(KeyCell::new(
+    ///     X {
+    ///         record: record.clone(),
+    ///     },
+    ///     signal.clone(),
+    /// ));
+    ///
+    /// signal.connect(key, &receiver, |this, value| {
+    ///     *this.record.borrow_mut() += &format!("A({}) ", value);
+    /// });
+    ///
+    /// signal.connect(key, &receiver, |this, value| {
+    ///     *this.record.borrow_mut() += &format!("B({}) ", value);
+    ///     if *value == 0 {
+    ///         *this.record.borrow_mut() += &format!("RE-EMIT({}) ", value + 1);
+    ///         let (cell, key) = Key::split_rw(this);
+    ///         cell.meta().emit(key, value + 1);
+    ///     }
+    /// });
+    ///
+    /// signal.connect(key, &receiver, |this, value| {
+    ///     *this.record.borrow_mut() += &format!("C({}) ", value);
+    /// });
+    ///
+    /// signal.emit(key, 0);
+    ///
+    /// assert_eq!(*record.borrow(), "A(0) B(0) RE-EMIT(1) A(1) B(1) C(1) ");
+    /// ```
+    pub fn emit<B>(&self, key: &mut Key, item: B)
+    where
+        B: Borrow<T>,
+    {
+        self.inner.rw(key).emit(item.borrow());
+    }
+
+    #[cfg(test)]
+    const fn ordering_depth() -> u32 {
+        FractionalIndexType::BITS
     }
 }
 
@@ -414,186 +534,38 @@ impl<T: 'static> Default for Signal<T> {
     }
 }
 
-struct SignalInner<T> {
-    receivers: Vec<Receiver<T>>,
-    index: usize,
-    depth: usize,
-    top: usize,
-    idgen: u64,
-}
+impl<T: 'static> Eq for Signal<T> {}
 
-impl<T: 'static> SignalInner<T> {
-    pub fn new() -> Self {
-        Self {
-            receivers: Vec::new(),
-            index: 0,
-            depth: 0,
-            top: 0,
-            idgen: 0,
-        }
+/// Compares two signals. Equal when the underlying signal object is the same,
+/// and their order values are the same.
+///
+/// # Examples #
+///
+/// ```
+/// use mutcy::{Key, Signal};
+///
+/// let key = &mut Key::acquire();
+///
+/// let signal = Signal::<()>::new();
+///
+/// // Equal cases.
+/// assert!(signal == signal);
+/// assert!(signal.clone() == signal);
+/// assert!(signal.before(key) == signal.before(key));
+/// assert!(signal.after(key) == signal.after(key));
+/// assert!(signal.after(key) == signal.after(key));
+///
+/// // Unequal cases.
+/// assert!(signal.before(key) != signal);
+/// assert!(signal.after(key) != signal);
+/// assert!(signal != signal.subsignal(key));
+///
+/// // Note that subsignals append a new signal object to the current order, so these are not
+/// // equal.
+/// assert!(signal.subsignal(key) != signal.subsignal(key));
+/// ```
+impl<T: 'static> PartialEq for Signal<T> {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.inner, &other.inner) && self.index.value() == other.index.value()
     }
-
-    pub fn connect<R, I, F>(
-        self: Rw<Self>,
-        receiver: &I,
-        order: FractionalIndexType,
-        handler: F,
-    ) -> u64
-    where
-        R: Meta + 'static,
-        I: IntoWeak<R>,
-        F: Fn(Rw<R>, &T) + 'static,
-    {
-        let receiver = receiver.into();
-        let target: Weak<_> = receiver.clone();
-
-        assert!(
-            Weak::strong_count(&target) > 0,
-            "Signal::connect: object must have a strong reference"
-        );
-
-        let handler: Rc<Handler<T>> = Rc::new(move |key, item| {
-            if let Some(receiver) = receiver.upgrade() {
-                (handler)(&mut receiver.rw(key), item);
-                false
-            } else {
-                true
-            }
-        });
-
-        let id = self.idgen;
-        self.idgen += 1;
-
-        let idx = self
-            .receivers
-            .partition_point(|x| x.relative_index <= order);
-
-        self.receivers.insert(
-            idx,
-            Receiver {
-                handler,
-                relative_index: order,
-                id,
-            },
-        );
-
-        if idx < self.index {
-            self.index -= 1;
-        }
-
-        id
-    }
-
-    pub fn subsignal(self: Rw<Self>, order: FractionalIndexType) -> Rc<KeyCell<Self>> {
-        let signal = Rc::new(KeyCell::new(Self::new(), ()));
-
-        let receiver = signal.clone();
-
-        let handler: Rc<Handler<T>> = Rc::new(move |key, item| {
-            let strong = Rc::strong_count(&receiver);
-            let mut receiver = receiver.rw(key);
-
-            if strong == 1 && receiver.len() == 0 {
-                return true;
-            }
-
-            receiver.emit_ref(item);
-            false
-        });
-
-        let id = self.idgen;
-        self.idgen += 1;
-
-        let idx = self
-            .receivers
-            .partition_point(|x| x.relative_index <= order);
-
-        self.receivers.insert(
-            idx,
-            Receiver {
-                handler,
-                relative_index: order,
-                id,
-            },
-        );
-
-        if idx < self.index {
-            self.index -= 1;
-        }
-
-        signal
-    }
-
-    pub fn emit(self: Rw<Self>, item: T) {
-        self.emit_ref(&item);
-    }
-
-    pub fn emit_ref(self: Rw<Self>, item: &T) {
-        self.top = self.depth;
-        let top = self.top;
-        self.depth += 1;
-        self.index = 0;
-
-        struct DeferDec<'a, 'b, T>(Rw<'a, 'b, SignalInner<T>>);
-
-        impl<T> Drop for DeferDec<'_, '_, T> {
-            fn drop(&mut self) {
-                self.0.depth -= 1;
-            }
-        }
-
-        let this = DeferDec(self);
-
-        while let Some(receiver) = this.0.receivers.get(this.0.index) {
-            let receiver = receiver.handler.clone();
-            this.0.index += 1;
-
-            let (_, key) = Key::split_rw(this.0);
-
-            if (receiver)(key, item) {
-                this.0.index -= 1;
-                let index = this.0.index;
-                this.0.receivers.remove(index);
-            }
-
-            if this.0.top > top {
-                break;
-            }
-        }
-
-        drop(this);
-    }
-
-    fn disconnect(self: Rw<Self>, id: u64, relative_index: FractionalIndexType) {
-        let left = self
-            .receivers
-            .partition_point(|x| x.relative_index < relative_index);
-        let right = self
-            .receivers
-            .partition_point(|x| x.relative_index <= relative_index);
-
-        let idx = self.receivers[left..right].partition_point(|x| x.id < id);
-
-        if idx + left >= self.receivers.len() {
-            return;
-        }
-
-        if self.receivers[idx + left].id != id {
-            return;
-        }
-
-        self.receivers.remove(idx + left);
-
-        if idx + left < self.index {
-            self.index -= 1;
-        }
-    }
-
-    fn len(self: Rw<Self>) -> usize {
-        self.receivers.len()
-    }
-}
-
-impl<T> Meta for SignalInner<T> {
-    type Data = ();
 }
