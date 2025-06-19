@@ -5,6 +5,12 @@ use std::{
     rc::{Rc, Weak},
 };
 
+pub enum Action {
+    Continue,
+    Remove,
+    RemoveSignal(FractionalIndexType),
+}
+
 pub struct SignalInner<T> {
     receivers: Vec<Receiver<T>>,
     index: usize,
@@ -45,9 +51,9 @@ impl<T: 'static> SignalInner<T> {
         let handler: Rc<Handler<T>> = Rc::new(move |key, item| {
             if let Some(receiver) = receiver.upgrade() {
                 (handler)(&mut receiver.rw(key), item);
-                false
+                Action::Continue
             } else {
-                true
+                Action::Remove
             }
         });
 
@@ -84,11 +90,15 @@ impl<T: 'static> SignalInner<T> {
             let mut receiver = receiver.rw(key);
 
             if strong == 1 && receiver.len() == 0 {
-                return true;
+                return Action::Remove;
+            }
+
+            if strong == 2 && receiver.len() == 0 && order % 2 == 1 {
+                return Action::RemoveSignal(order);
             }
 
             receiver.emit(item);
-            false
+            Action::Continue
         });
 
         let id = self.idgen;
@@ -136,10 +146,19 @@ impl<T: 'static> SignalInner<T> {
 
             let (_, key) = Key::split_rw(this.0);
 
-            if (receiver)(key, item) {
-                this.0.index -= 1;
-                let index = this.0.index;
-                this.0.receivers.remove(index);
+            match (receiver)(key, item) {
+                Action::Remove => {
+                    this.0.index -= 1;
+                    let index = this.0.index;
+                    this.0.receivers.remove(index);
+                }
+                Action::Continue => {}
+                Action::RemoveSignal(position) => {
+                    this.0.index -= 1;
+                    let index = this.0.index;
+                    this.0.receivers.remove(index);
+                    this.0.subsignals.remove(&position);
+                }
             }
 
             if this.0.top > top {
@@ -175,7 +194,7 @@ impl<T: 'static> SignalInner<T> {
         }
     }
 
-    fn len(self: Rw<Self>) -> usize {
+    pub fn len(&self) -> usize {
         self.receivers.len()
     }
 
@@ -185,6 +204,11 @@ impl<T: 'static> SignalInner<T> {
 
     pub fn preexisting_subsignal(self: Rw<Self>, index: FractionalIndexType) -> Option<Signal<T>> {
         self.subsignals.get(&index).cloned()
+    }
+
+    #[cfg(test)]
+    pub fn ordering_subsignals(&self) -> usize {
+        self.subsignals.len()
     }
 }
 

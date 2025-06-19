@@ -7,7 +7,7 @@ use std::{
     rc::{Rc, Weak},
 };
 
-const DEPTH: u32 = Signal::<()>::ordering_depth();
+const DEPTH: u32 = Signal::<()>::test_ordering_depth();
 
 #[test]
 fn emit_and_receive() {
@@ -595,4 +595,64 @@ fn emit_using_reference() {
     let key = &mut Key::acquire();
     let signal: Signal<()> = Signal::new();
     signal.emit(key, &());
+}
+
+#[test]
+fn subsignals_from_ordering_autoremoved() {
+    let key = &mut Key::acquire();
+    let signal: Signal<()> = Signal::new();
+
+    assert_eq!(signal.test_ordering_subsignal_count(key), 0);
+    assert_eq!(signal.test_subscriber_count(key), 0);
+
+    let mut before = signal.before(key);
+    for _ in 0..DEPTH - 2 {
+        before = before.before(key);
+        assert_eq!(signal.test_ordering_subsignal_count(key), 0);
+        assert_eq!(signal.test_subscriber_count(key), 0);
+    }
+
+    before = before.before(key);
+    assert_eq!(signal.test_ordering_subsignal_count(key), 1);
+    assert_eq!(signal.test_subscriber_count(key), 1);
+
+    signal.emit(key, &());
+    assert_eq!(signal.test_ordering_subsignal_count(key), 1);
+    assert_eq!(signal.test_subscriber_count(key), 1);
+
+    drop(before);
+    assert_eq!(signal.test_ordering_subsignal_count(key), 1);
+    assert_eq!(signal.test_subscriber_count(key), 1);
+
+    signal.emit(key, &());
+    assert_eq!(signal.test_ordering_subsignal_count(key), 0);
+    assert_eq!(signal.test_subscriber_count(key), 0);
+
+    let subsignal = signal.subsignal(key);
+    assert_eq!(signal.test_ordering_subsignal_count(key), 0);
+    assert_eq!(signal.test_subscriber_count(key), 1);
+    assert_eq!(subsignal.test_ordering_subsignal_count(key), 0);
+    assert_eq!(subsignal.test_subscriber_count(key), 0);
+
+    let connection = subsignal.connect(key, &Rc::new(KeyCell::new(0, ())), |_, _| {});
+    assert_eq!(signal.test_ordering_subsignal_count(key), 0);
+    assert_eq!(signal.test_subscriber_count(key), 1);
+    assert_eq!(subsignal.test_ordering_subsignal_count(key), 0);
+    assert_eq!(subsignal.test_subscriber_count(key), 1);
+
+    drop(subsignal);
+    assert_eq!(signal.test_ordering_subsignal_count(key), 0);
+    assert_eq!(signal.test_subscriber_count(key), 1);
+
+    signal.emit(key, &());
+    assert_eq!(signal.test_ordering_subsignal_count(key), 0);
+    assert_eq!(signal.test_subscriber_count(key), 1);
+
+    connection.disconnect(key);
+    assert_eq!(signal.test_ordering_subsignal_count(key), 0);
+    assert_eq!(signal.test_subscriber_count(key), 1);
+
+    signal.emit(key, &());
+    assert_eq!(signal.test_ordering_subsignal_count(key), 0);
+    assert_eq!(signal.test_subscriber_count(key), 0);
 }

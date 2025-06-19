@@ -1,6 +1,6 @@
 use self::{
     fractional_index::{FractionalIndex, FractionalIndexType},
-    inner::SignalInner,
+    inner::{Action, SignalInner},
 };
 use super::{IntoWeak, Key, KeyCell, Meta, Rw};
 use std::{borrow::Borrow, rc::Rc};
@@ -10,7 +10,7 @@ mod inner;
 #[cfg(test)]
 mod tests;
 
-type Handler<T> = dyn Fn(&mut Key, &T) -> bool;
+type Handler<T> = dyn Fn(&mut Key, &T) -> Action;
 
 struct Receiver<T> {
     handler: Rc<Handler<T>>,
@@ -393,7 +393,7 @@ impl<T: 'static> Signal<T> {
     }
 
     fn subsignal_at(&self, key: &mut Key, index: FractionalIndexType) -> Self {
-        assert!(index % 2 == 1);
+        debug_assert!(index % 2 == 1);
 
         if let Some(subsignal) = self.inner.rw(key).preexisting_subsignal(index) {
             return subsignal;
@@ -514,8 +514,19 @@ impl<T: 'static> Signal<T> {
     }
 
     #[cfg(test)]
-    const fn ordering_depth() -> u32 {
-        FractionalIndexType::BITS
+    const fn test_ordering_depth() -> u32 {
+        FractionalIndexType::BITS - 1
+    }
+
+    /// Get the amount of subscribers.
+    #[cfg(test)]
+    pub fn test_subscriber_count(&self, key: &mut Key) -> usize {
+        self.inner.ro(key).len()
+    }
+
+    #[cfg(test)]
+    fn test_ordering_subsignal_count(&self, key: &mut Key) -> usize {
+        self.inner.ro(key).ordering_subsignals()
     }
 }
 

@@ -142,42 +142,6 @@ fn criterion_benchmark(c: &mut Criterion) {
             });
         });
 
-        group.bench_function("disconnect_plain", |bench| {
-            let mut key = Key::acquire();
-
-            let signal = Signal::new();
-            let before = signal.before(&mut key);
-
-            let receiver = Rc::new(KeyCell::new((), ()));
-
-            for _ in 0..COUNT {
-                signal.connect(&mut key, &receiver, |_, _: &()| {});
-            }
-
-            bench.iter(|| {
-                let conn = before.connect(&mut key, &receiver, |_, _| {});
-                conn.disconnect(&mut key);
-            });
-        });
-
-        group.bench_function("disconnect_using_subsignal", |bench| {
-            let mut key = Key::acquire();
-
-            let signal = Signal::new();
-            let before = signal.before(&mut key).subsignal(&mut key);
-
-            let receiver = Rc::new(KeyCell::new((), ()));
-
-            for _ in 0..COUNT {
-                signal.connect(&mut key, &receiver, |_, _: &()| {});
-            }
-
-            bench.iter(|| {
-                let conn = before.connect(&mut key, &receiver, |_, _| {});
-                conn.disconnect(&mut key);
-            });
-        });
-
         group.finish();
     }
 
@@ -202,7 +166,32 @@ fn criterion_benchmark(c: &mut Criterion) {
     {
         let mut group = c.benchmark_group("disconnection");
         const COUNT: u64 = 1_000_000;
-        group.bench_function("needle", |bench| {
+        group.bench_function("needle-first", |bench| {
+            let mut key = Key::acquire();
+            let signal: Signal<()> = Signal::new();
+            let receiver = Rc::new(KeyCell::new(0, ()));
+
+            for _ in 0..COUNT {
+                signal
+                    .after(&mut key)
+                    .connect(&mut key, &receiver, |_, _| {});
+            }
+
+            bench.iter_custom(|iters| {
+                let mut elapsed = Duration::new(0, 0);
+
+                for _ in 0..iters {
+                    let connection = signal.connect(&mut key, &receiver, |_, _| {});
+                    let start = Instant::now();
+                    connection.disconnect(&mut key);
+                    elapsed += start.elapsed()
+                }
+
+                elapsed
+            });
+        });
+
+        group.bench_function("needle-last", |bench| {
             let mut key = Key::acquire();
             let signal: Signal<()> = Signal::new();
             let receiver = Rc::new(KeyCell::new(0, ()));
@@ -218,6 +207,32 @@ fn criterion_benchmark(c: &mut Criterion) {
 
                 for _ in 0..iters {
                     let connection = signal.connect(&mut key, &receiver, |_, _| {});
+                    let start = Instant::now();
+                    connection.disconnect(&mut key);
+                    elapsed += start.elapsed()
+                }
+
+                elapsed
+            });
+        });
+
+        group.bench_function("subsignal", |bench| {
+            let mut key = Key::acquire();
+
+            let signal = Signal::new();
+            let receiver = Rc::new(KeyCell::new((), ()));
+
+            for _ in 0..COUNT {
+                signal.connect(&mut key, &receiver, |_, _: &()| {});
+            }
+
+            let subsignal = signal.before(&mut key).subsignal(&mut key);
+
+            bench.iter_custom(|iters| {
+                let mut elapsed = Duration::new(0, 0);
+
+                for _ in 0..iters {
+                    let connection = subsignal.connect(&mut key, &receiver, |_, _| {});
                     let start = Instant::now();
                     connection.disconnect(&mut key);
                     elapsed += start.elapsed()
